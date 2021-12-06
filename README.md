@@ -1,0 +1,1 @@
+This repo is a quick snapshot of https://github.com/gquintard/varnish-rs/tree/main/examples/vmod_example slightly tweaked to be easy to clone and get going in case you need to create a new vmod in Rust.

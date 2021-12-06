@@ -1,0 +1,15 @@
+[package]
+name = "vmod_example"
+version = "0.0.1"
+edition = "2021"
+
+# if you copy this into a standalone repository,
+[build-dependencies]
+varnish = "0.0.4"
+
+[dependencies]
+varnish = "0.0.4"
+varnish-sys = "0.0.4"
+
+[lib]
+crate-type = ["cdylib"]
