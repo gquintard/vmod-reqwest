@@ -1,18 +1,17 @@
-# Copyright (c) 2021 Guillaume Quintard
-# Author: Guillaume Quintard <guillaume.quintard@gmail.com>
-# (vmodtool requires this format.)
+# Copyright (c) 2022 Guillaume Quintard Author: Guillaume Quintard
+# <guillaume.quintard@gmail.com>
 
-# We describe our vmod, all lines starting with a $ are special as they
-# are used to generate boilerplate code
-# the "example" here matches the "vmod_example" in `Cargo.toml`
-# for more information, check https://varnish-cache.org/docs/trunk/reference/vmod.html
-$Module example 3 "An example vmod"
+$Module reqwest 3 "HTTP requests"
 
-# this describes our function prototypse, and we can add some explanation about it underneath
-$Function BOOL is_even(INT)
+$Event event_function
+$Function VOID init(PRIV_VCL, PRIV_TASK, STRING name, STRING method, STRING url)
 
-This will tell you if a number is even, isn't that odd?
-
-$Function STRING captain_obvious([INT n])
-
-Produce a string explaining which number you provided as argument
+$Function VOID set_header(PRIV_TASK, STRING name, STRING key, STRING value)
+$Function VOID set_body(PRIV_TASK, STRING name, STRING body)
+$Function VOID send(PRIV_VCL, PRIV_TASK, STRING name)
+$Function BOOL exists(PRIV_TASK, STRING name)
+#
+$Function STRING header(PRIV_VCL, PRIV_TASK, STRING name, STRING key)
+$Function INT status(PRIV_VCL, PRIV_TASK, STRING name)
+$Function STRING body_as_string(PRIV_VCL, PRIV_TASK, STRING name)
+$Function STRING error(PRIV_VCL, PRIV_TASK, STRING name)

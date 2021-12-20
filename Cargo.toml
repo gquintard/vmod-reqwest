@@ -1,15 +1,20 @@
 [package]
-name = "vmod_example"
-version = "0.0.1"
+name = "vmod_reqwest"
+version = "0.0.2"
 edition = "2021"
 
-# if you copy this into a standalone repository,
 [build-dependencies]
-varnish = "0.0.4"
+varnish = { git = "https://github.com/gquintard/varnish-rs", rev = "f2206da4881fc9bc73f6abf6d33a572f035c0fe0" }
+varnish-sys = { git = "https://github.com/gquintard/varnish-rs", rev = "f2206da4881fc9bc73f6abf6d33a572f035c0fe0" }
 
 [dependencies]
-varnish = "0.0.4"
-varnish-sys = "0.0.4"
+varnish = { git = "https://github.com/gquintard/varnish-rs", rev = "f2206da4881fc9bc73f6abf6d33a572f035c0fe0" }
+varnish-sys = { git = "https://github.com/gquintard/varnish-rs", rev = "f2206da4881fc9bc73f6abf6d33a572f035c0fe0" }
+regex = "1.5"
+lru = "0.7.1"
+bytes = "1.1.0"
+reqwest = { version = "0.11", features = ["json"] }
+tokio = { version = "1", features = ["full"] }
 
 [lib]
 crate-type = ["cdylib"]
