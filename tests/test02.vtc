@@ -8,7 +8,7 @@ server s1 {
 
 # VCL, no backend needed
 varnish v1 -vcl {
-	import reqwest from "/home/gquintard/fun/vmod-reqwest/target/debug/libvmod_reqwest.so";
+	import reqwest from "${vmod}";
 	import std;
 
 	backend s1 none;
