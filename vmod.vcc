@@ -15,3 +15,5 @@ $Function STRING header(PRIV_VCL, PRIV_TASK, STRING name, STRING key)
 $Function INT status(PRIV_VCL, PRIV_TASK, STRING name)
 $Function STRING body_as_string(PRIV_VCL, PRIV_TASK, STRING name)
 $Function STRING error(PRIV_VCL, PRIV_TASK, STRING name)
+
+$Function BACKEND be(PRIV_VCL)

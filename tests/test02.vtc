@@ -1,0 +1,37 @@
+varnishtest "backend() with chached body"
+
+server s1 {
+	rxreq
+	txresp -hdr "bleep: bloop" -body "0123456789"
+	expect req.body == "0123456789abcdefABCDEF"
+} -start
+
+# VCL, no backend needed
+varnish v1 -vcl {
+	import reqwest from "/home/gquintard/fun/vmod-reqwest/target/debug/libvmod_reqwest.so";
+	import std;
+
+	backend s1 none;
+
+	sub vcl_recv {
+		std.cache_req_body(100KB);
+	}
+	sub vcl_backend_fetch {
+		set bereq.backend = reqwest.be();
+	}
+} -start
+varnish v1 -cliok "param.set debug +syncvsl"
+
+client c1 {
+	txreq -method "POST" -hdr "host: ${s1_addr}:${s1_port}" -nolen -hdr "Transfer-Encoding: chunked"
+	chunked "0123456789"
+	chunked "abcdef"
+	chunked "ABCDEF"
+	chunkedlen 0
+
+	rxresp
+	expect resp.http.bleep == "bloop"
+	expect resp.body == "0123456789"
+} -run
+
+server s1 -wait

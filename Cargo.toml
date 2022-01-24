@@ -4,17 +4,20 @@ version = "0.0.2"
 edition = "2021"
 
 [build-dependencies]
-varnish = { git = "https://github.com/gquintard/varnish-rs", rev = "f2206da4881fc9bc73f6abf6d33a572f035c0fe0" }
-varnish-sys = { git = "https://github.com/gquintard/varnish-rs", rev = "f2206da4881fc9bc73f6abf6d33a572f035c0fe0" }
+varnish = {  path = "../varnish-rs"}
+varnish-sys = {  path = "../varnish-rs/varnish-sys"}
 
 [dependencies]
-varnish = { git = "https://github.com/gquintard/varnish-rs", rev = "f2206da4881fc9bc73f6abf6d33a572f035c0fe0" }
-varnish-sys = { git = "https://github.com/gquintard/varnish-rs", rev = "f2206da4881fc9bc73f6abf6d33a572f035c0fe0" }
+varnish = {  path = "../varnish-rs"}
+varnish-sys = {  path = "../varnish-rs/varnish-sys"}
 regex = "1.5"
 lru = "0.7.1"
 bytes = "1.1.0"
-reqwest = { version = "0.11", features = ["json"] }
+reqwest = { version = "0.11", features = ["stream"] }
 tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+futures-util = "0.3"
+hyper = "0.14.16"
 
 [lib]
 crate-type = ["cdylib"]
