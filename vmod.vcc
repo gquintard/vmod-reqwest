@@ -6,7 +6,20 @@ $Module reqwest 3 "HTTP requests"
 $Event event_function
 
 
-$Object client(PRIV_VCL)
+$Object client(PRIV_VCL,
+	[STRING base_url],
+	[BOOL https],
+	[INT follow],
+	[DURATION timeout],
+	[DURATION connect_timeout],
+	BOOL auto_gzip = 1,
+	BOOL auto_deflate = 1,
+	BOOL auto_brotli = 1,
+	BOOL accept_invalid_certs = 0,
+	BOOL accept_invalid_hostnames = 0,
+	[STRING http_proxy],
+	[STRING https_proxy]
+	)
 $Method BACKEND .backend()
 $Method VOID .init(PRIV_TASK, STRING name, STRING method, STRING url)
 $Method VOID .set_header(PRIV_TASK, STRING name, STRING key, STRING value)
@@ -18,4 +31,4 @@ $Method INT .status(PRIV_VCL, PRIV_TASK, STRING name)
 $Method STRING .body_as_string(PRIV_VCL, PRIV_TASK, STRING name)
 $Method STRING .error(PRIV_VCL, PRIV_TASK, STRING name)
 
-
+# req timeout, export headers, import headers

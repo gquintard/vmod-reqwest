@@ -8,7 +8,7 @@ server s1 {
 	expect req.body == "0123456789"
 } -start
 
-varnish v1 -arg "-p thread_pool_stack=160k" -vcl+backend {
+varnish v1 -vcl+backend {
 	import reqwest from "${vmod}";
 
 	sub vcl_init {

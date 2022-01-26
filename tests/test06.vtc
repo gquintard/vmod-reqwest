@@ -1,0 +1,31 @@
+varnishtest "base_url"
+
+server s1 {
+	rxreq
+	expect req.url == "/prefix/url"
+	expect req.http.host == "original_host"
+	txresp -body "s1"
+} -start
+
+# VCL, no backend needed
+varnish v1 -vcl {
+	import reqwest from "${vmod}";
+	import std;
+
+	backend s1 none;
+
+	sub vcl_init {
+		new client = reqwest.client(base_url = "http://${s1_addr}:${s1_port}/prefix");
+	}
+
+	sub vcl_backend_fetch {
+		set bereq.backend = client.backend();
+	}
+} -start
+varnish v1 -cliok "param.set debug +syncvsl"
+
+client c1 {
+	txreq -url "/url" -hdr "host: original_host"
+	rxresp
+	expect resp.body == "s1"
+} -run

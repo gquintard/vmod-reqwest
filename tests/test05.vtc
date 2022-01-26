@@ -1,0 +1,52 @@
+varnishtest "redirect policy"
+
+server s2 {
+	rxreq
+	expect req.url == "/redirected"
+	txresp -body "s2"
+} -start
+
+server s1 {
+	rxreq
+	expect req.url == "/follow"
+	txresp -status 302 -hdr "location: http://${s2_addr}:${s2_port}/redirected" -hdr "connection: close"
+
+	close
+	accept
+
+	rxreq
+	expect req.url == "/nofollow"
+	txresp -status 302 -hdr "location: http://${s2_addr}:${s2_port}/redirected"
+} -start
+
+varnish v1 -vcl {
+	import reqwest from "${vmod}";
+
+	backend be none;
+
+	sub vcl_init {
+		new follow = reqwest.client();
+		new nofollow = reqwest.client(follow = 0);
+	}
+
+	sub vcl_recv {
+		set req.http.host = "${s1_addr}:${s1_port}";
+		if (req.url == "/follow") {
+			set req.backend_hint = follow.backend();
+		} else {
+			set req.backend_hint = nofollow.backend();
+		}
+	}
+} -start
+varnish v1 -cliok "param.set debug +syncvsl"
+
+client c1 {
+	txreq -url "/follow"
+	rxresp
+	expect resp.body == "s2"
+
+	txreq -url "/nofollow"
+	rxresp
+	expect resp.status == 302
+	expect resp.http.location == "http://${s2_addr}:${s2_port}/redirected"
+} -run

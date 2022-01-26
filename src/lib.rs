@@ -5,59 +5,143 @@ use std::boxed::Box;
 use std::io::Write;
 use std::os::raw::{c_uint, c_void};
 use std::ptr;
+use std::time::Duration;
 use varnish::vcl::ctx::{Ctx, Event};
 use varnish::vcl::http::HTTP;
 use varnish::vcl::vpriv::VPriv;
 
-use tokio::sync::mpsc::Receiver;
+use tokio::sync::mpsc::{Receiver, Sender, UnboundedSender};
 use varnish::vcl::processor::{PullResult, VFPCtx, VFP};
 
 varnish::vtc!(test01);
 varnish::vtc!(test02);
 varnish::vtc!(test03);
 varnish::vtc!(test04);
+varnish::vtc!(test05);
+varnish::vtc!(test06);
 
 #[allow(non_camel_case_types)]
+#[derive(Debug, Clone)]
 struct client {
     name: String,
-    reqwest_client: reqwest::Client,
+    client: reqwest::Client,
     be: *const varnish_sys::director,
+    https: bool,
+    base_url: Option<String>,
+}
+
+struct VCLBackend {
+    bgt: *const BgThread,
+    client: client,
 }
 
 const METHODS: *const varnish_sys::vdi_methods = &varnish_sys::vdi_methods {
-                magic: varnish_sys::VDI_METHODS_MAGIC,
-                type_: "test_be\0".as_ptr() as *const std::os::raw::c_char,
-                gethdrs: Some(gethdrs),
-                finish: Some(finish),
-                destroy : None,
-                event : None,
-                getip : None,
-                healthy : None,
-                http1pipe : None,
-                list : None,
-                panic : None,
-                resolve: None,
-            } as *const varnish_sys::vdi_methods;
+    magic: varnish_sys::VDI_METHODS_MAGIC,
+    type_: "test_be\0".as_ptr() as *const std::os::raw::c_char,
+    gethdrs: Some(gethdrs),
+    finish: Some(finish),
+    destroy: None,
+    event: None,
+    getip: None,
+    healthy: None,
+    http1pipe: None,
+    list: None,
+    panic: None,
+    resolve: None,
+} as *const varnish_sys::vdi_methods;
 
 impl client {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        ctx: &Ctx,
+        ctx: &mut Ctx,
         vcl_name: &str,
-        vp_vcl: &mut VPriv<BgThread>
-        ) -> Self {
-        let be = unsafe { varnish_sys::VRT_AddDirector(
+        vp_vcl: &mut VPriv<BgThread>,
+        base_url: Option<&str>,
+        https: Option<bool>,
+        follow: Option<i64>,
+        timeout: Option<Duration>,
+        connect_timeout: Option<Duration>,
+        auto_gzip: bool,
+        auto_deflate: bool,
+        auto_brotli: bool,
+        accept_invalid_certs: bool,
+        accept_invalid_hostnames: bool,
+        http_proxy: Option<&str>,
+        https_proxy: Option<&str>,
+    ) -> Self {
+        let mut rcb = reqwest::ClientBuilder::new()
+            .brotli(auto_brotli)
+            .deflate(auto_deflate)
+            .gzip(auto_gzip)
+            .danger_accept_invalid_certs(accept_invalid_certs)
+            .danger_accept_invalid_hostnames(accept_invalid_hostnames);
+        if let Some(t) = timeout {
+            rcb = rcb.timeout(t);
+        }
+        if let Some(t) = connect_timeout {
+            rcb = rcb.connect_timeout(t);
+        }
+        if let Some(proxy) = http_proxy {
+            match reqwest::Proxy::http(proxy) {
+                Ok(p) => {
+                    rcb = rcb.proxy(p);
+                }
+                Err(e) => {
+                    ctx.fail(&e.to_string());
+                }
+            }
+        }
+        if let Some(proxy) = https_proxy {
+            match reqwest::Proxy::http(proxy) {
+                Ok(p) => {
+                    rcb = rcb.proxy(p);
+                }
+                Err(e) => {
+                    ctx.fail(&e.to_string());
+                }
+            }
+        }
+        if let Some(limit) = follow {
+            if limit <= 0 {
+                rcb = rcb.redirect(reqwest::redirect::Policy::none());
+            } else {
+                rcb = rcb.redirect(reqwest::redirect::Policy::limited(limit as usize));
+            }
+        }
+        let reqwest_client = match rcb.build() {
+            Ok(rc) => rc,
+            Err(e) => {
+                ctx.fail(&e.to_string());
+                reqwest::Client::new()
+            }
+        };
+        if https.is_some() && base_url.is_some() {
+            ctx.fail("reqwest: client() can't take both an https and a base_url argument");
+        }
+        let mut client = client {
+            name: vcl_name.to_owned(),
+            client: reqwest_client,
+            https: https.unwrap_or(false),
+            be: std::ptr::null(),
+            base_url: base_url.map(|s| s.into()),
+        };
+
+        let backend_p = Box::into_raw(Box::new(VCLBackend {
+            bgt: vp_vcl.as_ref().unwrap() as *const BgThread,
+            // annoying: we need to clone the whole string because we don't have a stable address
+            // for it, oh well...
+            client: client.clone(),
+        })) as *mut VCLBackend;
+        client.be = unsafe {
+            varnish_sys::VRT_AddDirector(
                 ctx.raw,
                 METHODS,
-                vp_vcl.as_ref().unwrap() as *const BgThread as *mut std::ffi::c_void,
-                "test_be\0".as_ptr() as *const i8,
-                ) };
-        assert!(!be.is_null());
-
-        client {
-            name: vcl_name.to_owned(),
-            reqwest_client: reqwest::Client::new(),
-            be: be,
-        }
+                backend_p as *mut std::ffi::c_void,
+                format!("reqwest_backend_{}\0", vcl_name).as_ptr() as *const i8,
+            )
+        };
+        assert!(!client.be.is_null());
+        client
     }
 
     pub fn init(
@@ -73,10 +157,14 @@ impl client {
         }
 
         let ts = vp_task.as_mut().unwrap();
-        let t = VclTransaction::Req(self.reqwest_client.request(
-            reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?,
-            url,
-            ));
+        let t = VclTransaction::Req(Request {
+            method: method.into(),
+            url: url.into(),
+            headers: Vec::new(),
+            body: Body::None,
+            client: self.client.clone(),
+            vcl: true,
+        });
 
         match ts
             .iter_mut()
@@ -92,16 +180,16 @@ impl client {
         Ok(())
     }
 
-    fn vcl_send(bgt: &BgThread, t: &mut VclTransaction) {
+    fn vcl_send(&self, bgt: &BgThread, t: &mut VclTransaction) {
         let old_t = std::mem::replace(t, VclTransaction::Transition);
-        *t = VclTransaction::Sent(bgt.spawn_req(old_t.into_req(), true));
+        *t = VclTransaction::Sent(bgt.spawn_req(old_t.into_req()));
     }
 
-    fn wait_on(bgt: &BgThread, t: &mut VclTransaction) {
+    fn wait_on(&self, bgt: &BgThread, t: &mut VclTransaction) {
         match t {
             VclTransaction::Req(_) => {
-                client::vcl_send(bgt, t);
-                client::wait_on(bgt, t)
+                self.vcl_send(bgt, t);
+                self.wait_on(bgt, t)
             }
             VclTransaction::Sent(rx) => {
                 *t = match rx.blocking_recv().unwrap() {
@@ -140,7 +228,7 @@ impl client {
 
         match t {
             VclTransaction::Req(_) => {
-                client::vcl_send(vp_vcl.as_ref().unwrap(), t);
+                self.vcl_send(vp_vcl.as_ref().unwrap(), t);
                 Ok(())
             }
             _ => Err(format!("reqwest: request \"{}\" isn't initialized", name)),
@@ -159,13 +247,12 @@ impl client {
         key: &str,
         value: &str,
     ) -> Result<(), String> {
-        let t = self.get_transaction(vp_task, name)?;
-        if let VclTransaction::Req(_) = t {
-            let old_t = std::mem::replace(t, VclTransaction::Transition);
-            *t = VclTransaction::Req(old_t.into_req().header(key, value));
-            Ok(())
-        } else {
-            Err(format!("reqwest: request \"{}\" isn't initialized", name))
+        match self.get_transaction(vp_task, name)? {
+            VclTransaction::Req(req) => {
+                req.headers.push((key.into(), value.into()));
+                Ok(())
+            }
+            _ => Err(format!("reqwest: request \"{}\" isn't initialized", name)),
         }
     }
 
@@ -176,14 +263,12 @@ impl client {
         name: &str,
         body: &str,
     ) -> Result<(), String> {
-        let t = self.get_transaction(vp_task, name)?;
-        if let VclTransaction::Req(_) = t {
-            let old_t = std::mem::replace(t, VclTransaction::Transition);
-            // it's a bit annoying to have to copy the body, but the request may outlive our task
-            *t = VclTransaction::Req(old_t.into_req().body(body.to_owned()));
-            Ok(())
-        } else {
-            Err(format!("reqwest: request \"{}\" isn't initialized", name))
+        match self.get_transaction(vp_task, name)? {
+            VclTransaction::Req(req) => {
+                req.body = Body::Full(Vec::from(body));
+                Ok(())
+            }
+            _ => Err(format!("reqwest: request \"{}\" isn't initialized", name)),
         }
     }
 
@@ -195,7 +280,7 @@ impl client {
         name: &str,
     ) -> Result<i64, String> {
         let t = self.get_transaction(vp_task, name)?;
-        client::wait_on(vp_vcl.as_ref().unwrap(), t);
+        self.wait_on(vp_vcl.as_ref().unwrap(), t);
 
         Ok(t.unwrap_resp().as_ref().map(|rsp| rsp.status).unwrap_or(0))
     }
@@ -209,7 +294,7 @@ impl client {
         key: &str,
     ) -> Result<Option<&'a [u8]>, String> {
         let t = self.get_transaction(vp_task, name)?;
-        client::wait_on(vp_vcl.as_ref().unwrap(), t);
+        self.wait_on(vp_vcl.as_ref().unwrap(), t);
 
         Ok(t.unwrap_resp()
             .as_ref()
@@ -226,7 +311,7 @@ impl client {
         name: &str,
     ) -> Result<&'a [u8], String> {
         let t = self.get_transaction(vp_task, name)?;
-        client::wait_on(vp_vcl.as_ref().unwrap(), t);
+        self.wait_on(vp_vcl.as_ref().unwrap(), t);
 
         match t.unwrap_resp() {
             Err(_) => Ok("".as_ref()),
@@ -242,7 +327,7 @@ impl client {
         name: &str,
     ) -> Result<Option<String>, String> {
         let t = self.get_transaction(vp_task, name)?;
-        client::wait_on(vp_vcl.as_ref().unwrap(), t);
+        self.wait_on(vp_vcl.as_ref().unwrap(), t);
 
         match t.unwrap_resp() {
             Err(e) => Ok(Some(e.to_string())),
@@ -272,9 +357,21 @@ pub struct Entry {
 #[derive(Debug)]
 enum VclTransaction {
     Transition,
-    Req(reqwest::RequestBuilder),
+    Req(Request),
     Sent(Receiver<RespMsg>),
     Resp(Result<Response, String>),
+}
+
+// try to keep the object on stack as small as possible, we'll flesh it out into a reqwest::Request
+// once in the Background thread
+#[derive(Debug)]
+struct Request {
+    url: String,
+    method: String,
+    headers: Vec<(String, String)>,
+    body: Body,
+    client: reqwest::Client,
+    vcl: bool,
 }
 
 // calling reqwest::Response::body() consumes the object, so we keep a copy of the interesting bits
@@ -286,6 +383,13 @@ pub struct Response {
     status: i64,
 }
 
+#[derive(Debug)]
+enum Body {
+    None,
+    Full(Vec<u8>),
+    Stream(hyper::Body),
+}
+
 impl VclTransaction {
     fn unwrap_resp(&self) -> &Result<Response, String> {
         match self {
@@ -293,7 +397,7 @@ impl VclTransaction {
             _ => panic!("wrong VclTransaction type"),
         }
     }
-    fn into_req(self) -> reqwest::RequestBuilder {
+    fn into_req(self) -> Request {
         match self {
             VclTransaction::Req(rq) => rq,
             _ => panic!("wrong VclTransaction type"),
@@ -303,57 +407,75 @@ impl VclTransaction {
 
 pub struct BgThread {
     rt: tokio::runtime::Runtime,
+    sender: UnboundedSender<(Request, Sender<RespMsg>)>,
 }
 
 impl BgThread {
-    fn spawn_req(&self, req: reqwest::RequestBuilder, is_vcl: bool) -> Receiver<RespMsg> {
+    fn spawn_req(&self, req: Request) -> Receiver<RespMsg> {
         let (tx, rx) = tokio::sync::mpsc::channel(1);
-        self.rt.spawn(async move {
-            let mut resp = match req.send().await {
-                Err(e) => {
-                    tx.send(RespMsg::Err(e.to_string())).await.unwrap();
-                    return;
-                }
-                Ok(resp) => resp,
-            };
-            let mut beresp = Response {
-                status: resp.status().as_u16() as i64,
-                headers: resp.headers().clone(),
-                body: None,
-            };
-
-            if is_vcl {
-                beresp.body = match resp.bytes().await {
-                    Err(e) => {
-                        tx.send(RespMsg::Err(e.to_string())).await.unwrap();
-                        return;
-                    }
-                    Ok(b) => Some(b),
-                };
-                tx.send(RespMsg::Hdrs(beresp)).await.unwrap();
-            } else {
-                tx.send(RespMsg::Hdrs(beresp)).await.unwrap();
-
-                loop {
-                    match resp.chunk().await {
-                        Ok(None) => return,
-                        Ok(Some(bytes)) => {
-                            if tx.send(RespMsg::Chunk(bytes)).await.is_err() {
-                                return;
-                            }
-                        }
-                        Err(e) => {
-                            let _ = tx.send(RespMsg::Err(e.to_string())).await.unwrap();
-                            return;
-                        }
-                    };
-                }
-            }
-        });
+        self.sender.send((req, tx)).unwrap();
         rx
     }
 }
 
+async fn process_req(req: Request, tx: Sender<RespMsg>) {
+    let method = match reqwest::Method::from_bytes(req.method.as_bytes()) {
+        Ok(m) => m,
+        Err(e) => {
+            tx.send(RespMsg::Err(e.to_string())).await.unwrap();
+            return;
+        }
+    };
+    let mut rreq = req.client.request(method, req.url);
+    for (k, v) in req.headers {
+        rreq = rreq.header(k, v);
+    }
+    match req.body {
+        Body::None => (),
+        Body::Stream(b) => rreq = rreq.body(b),
+        Body::Full(v) => rreq = rreq.body(v),
+    }
+    let mut resp = match rreq.send().await {
+        Err(e) => {
+            tx.send(RespMsg::Err(e.to_string())).await.unwrap();
+            return;
+        }
+        Ok(resp) => resp,
+    };
+    let mut beresp = Response {
+        status: resp.status().as_u16() as i64,
+        headers: resp.headers().clone(),
+        body: None,
+    };
+
+    if req.vcl {
+        beresp.body = match resp.bytes().await {
+            Err(e) => {
+                tx.send(RespMsg::Err(e.to_string())).await.unwrap();
+                return;
+            }
+            Ok(b) => Some(b),
+        };
+        tx.send(RespMsg::Hdrs(beresp)).await.unwrap();
+    } else {
+        tx.send(RespMsg::Hdrs(beresp)).await.unwrap();
+
+        loop {
+            match resp.chunk().await {
+                Ok(None) => return,
+                Ok(Some(bytes)) => {
+                    if tx.send(RespMsg::Chunk(bytes)).await.is_err() {
+                        return;
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(RespMsg::Err(e.to_string())).await.unwrap();
+                    return;
+                }
+            };
+        }
+    }
+}
 
 struct BackendResp {
     chan: Option<Receiver<RespMsg>>,
@@ -438,21 +560,33 @@ unsafe extern "C" fn gethdrs(
     ctx: *const varnish_sys::vrt_ctx,
     be: varnish_sys::VCL_BACKEND,
 ) -> ::std::os::raw::c_int {
-    let (req_body_tx, body) = hyper::body::Body::channel();
+    let VCLBackend { bgt: bgtp, client } = ((*be).priv_ as *const VCLBackend).as_ref().unwrap();
+    let bgt = bgtp.as_ref().unwrap();
     let bereq = HTTP::new((*(*ctx).bo).bereq).unwrap();
-    let client = reqwest::Client::new();
-    let mut req = client
-        .request(
-            reqwest::Method::from_bytes(bereq.method().unwrap().as_bytes()).unwrap(),
-            String::new() + "http://" + bereq.header("host").unwrap() + bereq.url().unwrap(),
-        )
-        .body(body);
-    for (k, v) in &bereq {
-        req = req.header(k, v);
-    }
+    let url = match (&client.base_url, client.https) {
+        (Some(url), _) => String::new() + url + bereq.url().unwrap(),
+        (None, true) => {
+            String::new() + "https://" + bereq.header("host").unwrap() + bereq.url().unwrap()
+        }
+        (None, false) => {
+            String::new() + "http://" + bereq.header("host").unwrap() + bereq.url().unwrap()
+        }
+    };
 
-    let bgt = ((*be).priv_ as *const BgThread).as_ref().unwrap();
-    let mut resp_rx = bgt.spawn_req(req, false);
+    let (req_body_tx, body) = hyper::body::Body::channel();
+    let req = Request {
+        method: bereq.method().unwrap().to_string(),
+        url,
+        client: client.client.clone(),
+        body: Body::Stream(body),
+        vcl: false,
+        headers: bereq
+            .into_iter()
+            .map(|(k, v)| (k.into(), v.into()))
+            .collect(),
+    };
+
+    let mut resp_rx = bgt.spawn_req(req);
 
     let bcp = Box::into_raw(Box::new(BodyChan {
         chan: req_body_tx,
@@ -462,10 +596,8 @@ unsafe extern "C" fn gethdrs(
     // mimicking V1F_SendReq in varnish-cache
     let bo = (*ctx).bo.as_mut().unwrap();
     if !(*bo).bereq_body.is_null() {
-        dbg!();
         varnish_sys::ObjIterate(bo.wrk, bo.bereq_body, p, Some(body_send_iterate), 0);
     } else if !bo.req.is_null() && (*bo.req).req_body_status != varnish_sys::BS_NONE.as_ptr() {
-        dbg!();
         let i = varnish_sys::VRB_Iterate(
             bo.wrk,
             bo.vsl.as_mut_ptr(),
@@ -523,16 +655,26 @@ unsafe extern "C" fn finish(ctx: *const varnish_sys::vrt_ctx, _arg1: varnish_sys
     (*(*ctx).bo).htc = ptr::null_mut();
 }
 
-#[allow(clippy::missing_safety_doc)]
-pub unsafe fn event(_ctx: &Ctx, vp: &mut VPriv<BgThread>, event: Event) -> Result<(), &'static str> {
-    match event {
-        Event::Load => {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            vp.store(BgThread {
-                rt,
-            });
-        }
-        _ => (),
+pub(crate) unsafe fn event(
+    _ctx: &Ctx,
+    vp: &mut VPriv<BgThread>,
+    event: Event,
+) -> Result<(), &'static str> {
+    // we only need to worry about Load, BgThread will be destroyed with the VPriv when the VCL is
+    // discarded
+    if let Event::Load = event {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (sender, mut receiver) =
+            tokio::sync::mpsc::unbounded_channel::<(Request, Sender<RespMsg>)>();
+        rt.spawn(async move {
+            loop {
+                let (req, tx) = receiver.recv().await.unwrap();
+                tokio::spawn(async move {
+                    process_req(req, tx).await;
+                });
+            }
+        });
+        vp.store(BgThread { rt, sender });
     }
     Ok(())
 }
