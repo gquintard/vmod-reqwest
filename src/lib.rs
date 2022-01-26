@@ -33,7 +33,6 @@ impl client {
     pub fn init(
         &mut self,
         _ctx: &Ctx,
-        vp_vcl: &mut VPriv<BgThread>,
         vp_task: &mut VPriv<Vec<Entry>>,
         name: &str,
         method: &str,
@@ -44,7 +43,7 @@ impl client {
         }
 
         let ts = vp_task.as_mut().unwrap();
-        let t = VclTransaction::Req(vp_vcl.as_ref().unwrap().client.request(
+        let t = VclTransaction::Req(self.reqwest_client.request(
             reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?,
             url,
         ));
@@ -270,7 +269,6 @@ impl VclTransaction {
 
 pub struct BgThread {
     rt: tokio::runtime::Runtime,
-    client: reqwest::Client,
     backend: Option<*const varnish_sys::director>,
 }
 
@@ -503,7 +501,6 @@ pub unsafe fn event(ctx: &Ctx, vp: &mut VPriv<BgThread>, event: Event) -> Result
             let client = reqwest::Client::builder().build().unwrap();
             vp.store(BgThread {
                 rt,
-                client,
                 backend: None,
             });
         }

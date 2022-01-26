@@ -8,7 +8,7 @@ $Event event_function
 $Function BACKEND be(PRIV_VCL)
 
 $Object client()
-$Method VOID .init(PRIV_VCL, PRIV_TASK, STRING name, STRING method, STRING url)
+$Method VOID .init(PRIV_TASK, STRING name, STRING method, STRING url)
 $Method VOID .set_header(PRIV_TASK, STRING name, STRING key, STRING value)
 $Method VOID .set_body(PRIV_TASK, STRING name, STRING body)
 $Method VOID .send(PRIV_VCL, PRIV_TASK, STRING name)
