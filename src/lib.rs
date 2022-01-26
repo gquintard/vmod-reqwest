@@ -49,14 +49,14 @@ impl client {
                 ctx.raw,
                 METHODS,
                 vp_vcl.as_ref().unwrap() as *const BgThread as *mut std::ffi::c_void,
-                "test_be\0".as_ptr() as *const i8,
+                format!("reqwest_backend_{}\0", vcl_name).as_ptr() as *const i8,
                 ) };
         assert!(!be.is_null());
 
         client {
             name: vcl_name.to_owned(),
             reqwest_client: reqwest::Client::new(),
-            be: be,
+            be,
         }
     }
 
