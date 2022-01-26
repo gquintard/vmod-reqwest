@@ -1,13 +1,13 @@
-# Copyright (c) 2022 Guillaume Quintard Author: Guillaume Quintard
+# Copyright (c) 2021 Guillaume Quintard Author: Guillaume Quintard
 # <guillaume.quintard@gmail.com>
 
 $Module reqwest 3 "HTTP requests"
 
 $Event event_function
 
-$Function BACKEND be(PRIV_VCL)
 
-$Object client()
+$Object client(PRIV_VCL)
+$Method BACKEND .backend()
 $Method VOID .init(PRIV_TASK, STRING name, STRING method, STRING url)
 $Method VOID .set_header(PRIV_TASK, STRING name, STRING key, STRING value)
 $Method VOID .set_body(PRIV_TASK, STRING name, STRING body)

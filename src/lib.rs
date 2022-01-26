@@ -21,15 +21,45 @@ varnish::vtc!(test04);
 struct client {
     name: String,
     reqwest_client: reqwest::Client,
+    be: *const varnish_sys::director,
 }
 
+const METHODS: *const varnish_sys::vdi_methods = &varnish_sys::vdi_methods {
+                magic: varnish_sys::VDI_METHODS_MAGIC,
+                type_: "test_be\0".as_ptr() as *const std::os::raw::c_char,
+                gethdrs: Some(gethdrs),
+                finish: Some(finish),
+                destroy : None,
+                event : None,
+                getip : None,
+                healthy : None,
+                http1pipe : None,
+                list : None,
+                panic : None,
+                resolve: None,
+            } as *const varnish_sys::vdi_methods;
+
 impl client {
-    pub fn new(_ctx: &Ctx, vcl_name: &str) -> Self {
+    pub fn new(
+        ctx: &Ctx,
+        vcl_name: &str,
+        vp_vcl: &mut VPriv<BgThread>
+        ) -> Self {
+        let be = unsafe { varnish_sys::VRT_AddDirector(
+                ctx.raw,
+                METHODS,
+                vp_vcl.as_ref().unwrap() as *const BgThread as *mut std::ffi::c_void,
+                "test_be\0".as_ptr() as *const i8,
+                ) };
+        assert!(!be.is_null());
+
         client {
             name: vcl_name.to_owned(),
             reqwest_client: reqwest::Client::new(),
+            be: be,
         }
     }
+
     pub fn init(
         &mut self,
         _ctx: &Ctx,
@@ -46,7 +76,7 @@ impl client {
         let t = VclTransaction::Req(self.reqwest_client.request(
             reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?,
             url,
-        ));
+            ));
 
         match ts
             .iter_mut()
@@ -117,7 +147,7 @@ impl client {
         }
     }
 
-    pub fn exists(&mut self, ctx: &Ctx, vp_task: &mut VPriv<Vec<Entry>>, name: &str) -> bool {
+    pub fn exists(&mut self, _ctx: &Ctx, vp_task: &mut VPriv<Vec<Entry>>, name: &str) -> bool {
         self.get_transaction(vp_task, name).is_ok()
     }
 
@@ -219,6 +249,10 @@ impl client {
             Ok(_) => Ok(None),
         }
     }
+
+    pub fn backend(&self, _ctx: &Ctx) -> *const varnish_sys::director {
+        self.be
+    }
 }
 
 #[derive(Debug)]
@@ -269,7 +303,6 @@ impl VclTransaction {
 
 pub struct BgThread {
     rt: tokio::runtime::Runtime,
-    backend: Option<*const varnish_sys::director>,
 }
 
 impl BgThread {
@@ -321,9 +354,6 @@ impl BgThread {
     }
 }
 
-pub fn be(_: &Ctx, vp: &mut VPriv<BgThread>) -> *const varnish_sys::director {
-    vp.as_ref().unwrap().backend.unwrap()
-}
 
 struct BackendResp {
     chan: Option<Receiver<RespMsg>>,
@@ -494,37 +524,13 @@ unsafe extern "C" fn finish(ctx: *const varnish_sys::vrt_ctx, _arg1: varnish_sys
 }
 
 #[allow(clippy::missing_safety_doc)]
-pub unsafe fn event(ctx: &Ctx, vp: &mut VPriv<BgThread>, event: Event) -> Result<(), &'static str> {
+pub unsafe fn event(_ctx: &Ctx, vp: &mut VPriv<BgThread>, event: Event) -> Result<(), &'static str> {
     match event {
         Event::Load => {
             let rt = tokio::runtime::Runtime::new().unwrap();
-            let client = reqwest::Client::builder().build().unwrap();
             vp.store(BgThread {
                 rt,
-                backend: None,
             });
-        }
-        Event::Warm => {
-            let methods = Box::new(varnish_sys::vdi_methods {
-                magic: varnish_sys::VDI_METHODS_MAGIC,
-                type_: "test_be\0".as_ptr() as *const std::os::raw::c_char,
-                gethdrs: Some(gethdrs),
-                finish: Some(finish),
-                ..std::default::Default::default()
-            });
-            let mut bgt = vp.as_mut().unwrap();
-            let be = varnish_sys::VRT_AddDirector(
-                ctx.raw,
-                &*methods,
-                bgt as *const BgThread as *mut std::ffi::c_void,
-                "test_be\0".as_ptr() as *const i8,
-            );
-            assert!(!be.is_null());
-            bgt.backend = Some(be);
-        }
-        Event::Cold => {
-            let bgt = vp.as_mut().unwrap();
-            varnish_sys::VRT_DelDirector(&mut bgt.backend.unwrap());
         }
         _ => (),
     }

@@ -13,11 +13,16 @@ varnish v1 -vcl {
 
 	backend s1 none;
 
+	sub vcl_init {
+		new client = reqwest.client();
+	}
+
 	sub vcl_recv {
 		std.cache_req_body(100KB);
 	}
+
 	sub vcl_backend_fetch {
-		set bereq.backend = reqwest.be();
+		set bereq.backend = client.backend();
 	}
 } -start
 varnish v1 -cliok "param.set debug +syncvsl"
