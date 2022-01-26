@@ -25,7 +25,7 @@ struct client {
 
 impl client {
     pub fn new(_ctx: &Ctx, vcl_name: &str) -> Self {
-        client{
+        client {
             name: vcl_name.to_owned(),
             reqwest_client: reqwest::Client::new(),
         }
@@ -38,18 +38,21 @@ impl client {
         name: &str,
         method: &str,
         url: &str,
-        ) -> Result<(), String> {
+    ) -> Result<(), String> {
         if vp_task.as_ref().is_none() {
             vp_task.store(Vec::new());
         }
 
         let ts = vp_task.as_mut().unwrap();
         let t = VclTransaction::Req(vp_vcl.as_ref().unwrap().client.request(
-                reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?,
-                url,
-                ));
+            reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?,
+            url,
+        ));
 
-        match ts.iter_mut().find(|e| e.req_name == name && e.client_name == self.name) {
+        match ts
+            .iter_mut()
+            .find(|e| e.req_name == name && e.client_name == self.name)
+        {
             None => ts.push(Entry {
                 transaction: t,
                 req_name: name.to_owned(),
@@ -87,7 +90,7 @@ impl client {
         &self,
         vp_task: &'a mut VPriv<Vec<Entry>>,
         name: &'b str,
-        ) -> Result<&'a mut VclTransaction, String> {
+    ) -> Result<&'a mut VclTransaction, String> {
         vp_task
             .as_mut()
             .ok_or(format!("reqwest: request \"{}\" isn't initialized", name))?
@@ -103,7 +106,7 @@ impl client {
         vp_vcl: &mut VPriv<BgThread>,
         vp_task: &mut VPriv<Vec<Entry>>,
         name: &str,
-        ) -> Result<(), String> {
+    ) -> Result<(), String> {
         let t = self.get_transaction(vp_task, name)?;
 
         match t {
@@ -115,9 +118,7 @@ impl client {
         }
     }
 
-    pub fn exists(
-        &mut self,
-        ctx: &Ctx, vp_task: &mut VPriv<Vec<Entry>>, name: &str) -> bool {
+    pub fn exists(&mut self, ctx: &Ctx, vp_task: &mut VPriv<Vec<Entry>>, name: &str) -> bool {
         self.get_transaction(vp_task, name).is_ok()
     }
 
@@ -128,7 +129,7 @@ impl client {
         name: &str,
         key: &str,
         value: &str,
-        ) -> Result<(), String> {
+    ) -> Result<(), String> {
         let t = self.get_transaction(vp_task, name)?;
         if let VclTransaction::Req(_) = t {
             let old_t = std::mem::replace(t, VclTransaction::Transition);
@@ -145,7 +146,7 @@ impl client {
         vp_task: &mut VPriv<Vec<Entry>>,
         name: &str,
         body: &str,
-        ) -> Result<(), String> {
+    ) -> Result<(), String> {
         let t = self.get_transaction(vp_task, name)?;
         if let VclTransaction::Req(_) = t {
             let old_t = std::mem::replace(t, VclTransaction::Transition);
@@ -163,7 +164,7 @@ impl client {
         vp_vcl: &mut VPriv<BgThread>,
         vp_task: &mut VPriv<Vec<Entry>>,
         name: &str,
-        ) -> Result<i64, String> {
+    ) -> Result<i64, String> {
         let t = self.get_transaction(vp_task, name)?;
         client::wait_on(vp_vcl.as_ref().unwrap(), t);
 
@@ -177,15 +178,15 @@ impl client {
         vp_task: &'a mut VPriv<Vec<Entry>>,
         name: &str,
         key: &str,
-        ) -> Result<Option<&'a [u8]>, String> {
+    ) -> Result<Option<&'a [u8]>, String> {
         let t = self.get_transaction(vp_task, name)?;
         client::wait_on(vp_vcl.as_ref().unwrap(), t);
 
         Ok(t.unwrap_resp()
-           .as_ref()
-           .ok()
-           .map(|rsp| rsp.headers.get(key).map(|h| h.as_ref()))
-           .unwrap_or(None))
+            .as_ref()
+            .ok()
+            .map(|rsp| rsp.headers.get(key).map(|h| h.as_ref()))
+            .unwrap_or(None))
     }
 
     pub fn body_as_string<'a>(
@@ -194,7 +195,7 @@ impl client {
         vp_vcl: &mut VPriv<BgThread>,
         vp_task: &'a mut VPriv<Vec<Entry>>,
         name: &str,
-        ) -> Result<&'a [u8], String> {
+    ) -> Result<&'a [u8], String> {
         let t = self.get_transaction(vp_task, name)?;
         client::wait_on(vp_vcl.as_ref().unwrap(), t);
 
@@ -210,7 +211,7 @@ impl client {
         vp_vcl: &mut VPriv<BgThread>,
         vp_task: &mut VPriv<Vec<Entry>>,
         name: &str,
-        ) -> Result<Option<String>, String> {
+    ) -> Result<Option<String>, String> {
         let t = self.get_transaction(vp_task, name)?;
         client::wait_on(vp_vcl.as_ref().unwrap(), t);
 
@@ -219,8 +220,6 @@ impl client {
             Ok(_) => Ok(None),
         }
     }
-
-
 }
 
 #[derive(Debug)]
