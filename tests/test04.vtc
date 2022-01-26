@@ -1,0 +1,42 @@
+varnishtest "multiple clients, same req names"
+
+server s1 {
+	rxreq
+	txresp -hdr "server: s1"
+} -start
+
+server s2 {
+	rxreq
+	txresp -hdr "server: s2"
+} -start
+
+varnish v1 -vcl {
+	import reqwest from "${vmod}";
+
+	backend be none;
+
+	sub vcl_init {
+		new client1 = reqwest.client();
+		new client2 = reqwest.client();
+	}
+
+	sub vcl_recv {
+		return (synth(200));
+	}
+
+	sub vcl_synth {
+		client1.init("name", "GET", "http://${s1_addr}:${s1_port}");
+		client2.init("name", "GET", "http://${s2_addr}:${s2_port}");
+		set resp.http.s1 = client1.header("name", "server");
+		set resp.http.s2 = client2.header("name", "server");
+	}
+} -start
+
+client c1 {
+	txreq
+	rxresp
+	expect resp.http.s1 == "s1"
+	expect resp.http.s2 == "s2"
+} -run
+
+server s1 -wait

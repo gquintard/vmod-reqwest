@@ -15,6 +15,213 @@ use varnish::vcl::processor::{PullResult, VFPCtx, VFP};
 varnish::vtc!(test01);
 varnish::vtc!(test02);
 varnish::vtc!(test03);
+varnish::vtc!(test04);
+
+#[allow(non_camel_case_types)]
+struct client {
+    name: String,
+    reqwest_client: reqwest::Client,
+}
+
+impl client {
+    pub fn new(_ctx: &Ctx, vcl_name: &str) -> Self {
+        client{
+            name: vcl_name.to_owned(),
+            reqwest_client: reqwest::Client::new(),
+        }
+    }
+    pub fn init(
+        &mut self,
+        _ctx: &Ctx,
+        vp_vcl: &mut VPriv<BgThread>,
+        vp_task: &mut VPriv<Vec<Entry>>,
+        name: &str,
+        method: &str,
+        url: &str,
+        ) -> Result<(), String> {
+        if vp_task.as_ref().is_none() {
+            vp_task.store(Vec::new());
+        }
+
+        let ts = vp_task.as_mut().unwrap();
+        let t = VclTransaction::Req(vp_vcl.as_ref().unwrap().client.request(
+                reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?,
+                url,
+                ));
+
+        match ts.iter_mut().find(|e| e.req_name == name && e.client_name == self.name) {
+            None => ts.push(Entry {
+                transaction: t,
+                req_name: name.to_owned(),
+                client_name: self.name.to_owned(),
+            }),
+            Some(e) => e.transaction = t,
+        }
+        Ok(())
+    }
+
+    fn vcl_send(bgt: &BgThread, t: &mut VclTransaction) {
+        let old_t = std::mem::replace(t, VclTransaction::Transition);
+        *t = VclTransaction::Sent(bgt.spawn_req(old_t.into_req(), true));
+    }
+
+    fn wait_on(bgt: &BgThread, t: &mut VclTransaction) {
+        match t {
+            VclTransaction::Req(_) => {
+                client::vcl_send(bgt, t);
+                client::wait_on(bgt, t)
+            }
+            VclTransaction::Sent(rx) => {
+                *t = match rx.blocking_recv().unwrap() {
+                    RespMsg::Hdrs(resp) => VclTransaction::Resp(Ok(resp)),
+                    RespMsg::Chunk(_) => unreachable!(),
+                    RespMsg::Err(e) => VclTransaction::Resp(Err(e)),
+                };
+            }
+            VclTransaction::Resp(_) => (),
+            VclTransaction::Transition => panic!("impossible"),
+        }
+    }
+
+    fn get_transaction<'a, 'b>(
+        &self,
+        vp_task: &'a mut VPriv<Vec<Entry>>,
+        name: &'b str,
+        ) -> Result<&'a mut VclTransaction, String> {
+        vp_task
+            .as_mut()
+            .ok_or(format!("reqwest: request \"{}\" isn't initialized", name))?
+            .iter_mut()
+            .find(|e| name == e.req_name && self.name == e.client_name)
+            .map(|e| &mut e.transaction)
+            .ok_or(format!("reqwest: request \"{}\" isn't initialized", name))
+    }
+
+    pub fn send(
+        &mut self,
+        _ctx: &Ctx,
+        vp_vcl: &mut VPriv<BgThread>,
+        vp_task: &mut VPriv<Vec<Entry>>,
+        name: &str,
+        ) -> Result<(), String> {
+        let t = self.get_transaction(vp_task, name)?;
+
+        match t {
+            VclTransaction::Req(_) => {
+                client::vcl_send(vp_vcl.as_ref().unwrap(), t);
+                Ok(())
+            }
+            _ => Err(format!("reqwest: request \"{}\" isn't initialized", name)),
+        }
+    }
+
+    pub fn exists(
+        &mut self,
+        ctx: &Ctx, vp_task: &mut VPriv<Vec<Entry>>, name: &str) -> bool {
+        self.get_transaction(vp_task, name).is_ok()
+    }
+
+    pub fn set_header(
+        &mut self,
+        _ctx: &Ctx,
+        vp_task: &mut VPriv<Vec<Entry>>,
+        name: &str,
+        key: &str,
+        value: &str,
+        ) -> Result<(), String> {
+        let t = self.get_transaction(vp_task, name)?;
+        if let VclTransaction::Req(_) = t {
+            let old_t = std::mem::replace(t, VclTransaction::Transition);
+            *t = VclTransaction::Req(old_t.into_req().header(key, value));
+            Ok(())
+        } else {
+            Err(format!("reqwest: request \"{}\" isn't initialized", name))
+        }
+    }
+
+    pub fn set_body(
+        &mut self,
+        _ctx: &Ctx,
+        vp_task: &mut VPriv<Vec<Entry>>,
+        name: &str,
+        body: &str,
+        ) -> Result<(), String> {
+        let t = self.get_transaction(vp_task, name)?;
+        if let VclTransaction::Req(_) = t {
+            let old_t = std::mem::replace(t, VclTransaction::Transition);
+            // it's a bit annoying to have to copy the body, but the request may outlive our task
+            *t = VclTransaction::Req(old_t.into_req().body(body.to_owned()));
+            Ok(())
+        } else {
+            Err(format!("reqwest: request \"{}\" isn't initialized", name))
+        }
+    }
+
+    pub fn status(
+        &mut self,
+        _ctx: &Ctx,
+        vp_vcl: &mut VPriv<BgThread>,
+        vp_task: &mut VPriv<Vec<Entry>>,
+        name: &str,
+        ) -> Result<i64, String> {
+        let t = self.get_transaction(vp_task, name)?;
+        client::wait_on(vp_vcl.as_ref().unwrap(), t);
+
+        Ok(t.unwrap_resp().as_ref().map(|rsp| rsp.status).unwrap_or(0))
+    }
+
+    pub fn header<'a>(
+        &mut self,
+        _ctx: &Ctx,
+        vp_vcl: &mut VPriv<BgThread>,
+        vp_task: &'a mut VPriv<Vec<Entry>>,
+        name: &str,
+        key: &str,
+        ) -> Result<Option<&'a [u8]>, String> {
+        let t = self.get_transaction(vp_task, name)?;
+        client::wait_on(vp_vcl.as_ref().unwrap(), t);
+
+        Ok(t.unwrap_resp()
+           .as_ref()
+           .ok()
+           .map(|rsp| rsp.headers.get(key).map(|h| h.as_ref()))
+           .unwrap_or(None))
+    }
+
+    pub fn body_as_string<'a>(
+        &mut self,
+        _ctx: &Ctx,
+        vp_vcl: &mut VPriv<BgThread>,
+        vp_task: &'a mut VPriv<Vec<Entry>>,
+        name: &str,
+        ) -> Result<&'a [u8], String> {
+        let t = self.get_transaction(vp_task, name)?;
+        client::wait_on(vp_vcl.as_ref().unwrap(), t);
+
+        match t.unwrap_resp() {
+            Err(_) => Ok("".as_ref()),
+            Ok(rsp) => Ok(rsp.body.as_ref().unwrap()),
+        }
+    }
+
+    pub fn error(
+        &mut self,
+        _ctx: &Ctx,
+        vp_vcl: &mut VPriv<BgThread>,
+        vp_task: &mut VPriv<Vec<Entry>>,
+        name: &str,
+        ) -> Result<Option<String>, String> {
+        let t = self.get_transaction(vp_task, name)?;
+        client::wait_on(vp_vcl.as_ref().unwrap(), t);
+
+        match t.unwrap_resp() {
+            Err(e) => Ok(Some(e.to_string())),
+            Ok(_) => Ok(None),
+        }
+    }
+
+
+}
 
 #[derive(Debug)]
 enum RespMsg {
@@ -23,11 +230,14 @@ enum RespMsg {
     Err(String),
 }
 
+#[derive(Debug)]
 pub struct Entry {
-    name: String,
+    client_name: String,
+    req_name: String,
     transaction: VclTransaction,
 }
 
+#[derive(Debug)]
 enum VclTransaction {
     Transition,
     Req(reqwest::RequestBuilder),
@@ -56,184 +266,6 @@ impl VclTransaction {
             VclTransaction::Req(rq) => rq,
             _ => panic!("wrong VclTransaction type"),
         }
-    }
-}
-
-pub fn init(
-    _ctx: &Ctx,
-    vp_vcl: &mut VPriv<BgThread>,
-    vp_task: &mut VPriv<Vec<Entry>>,
-    name: &str,
-    method: &str,
-    url: &str,
-) -> Result<(), String> {
-    if vp_task.as_ref().is_none() {
-        vp_task.store(Vec::new());
-    }
-
-    let ts = vp_task.as_mut().unwrap();
-    let t = VclTransaction::Req(vp_vcl.as_ref().unwrap().client.request(
-        reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?,
-        url,
-    ));
-
-    match ts.iter_mut().find(|e| e.name == name) {
-        None => ts.push(Entry {
-            transaction: t,
-            name: name.to_owned(),
-        }),
-        Some(e) => e.transaction = t,
-    }
-    Ok(())
-}
-
-fn vcl_send(bgt: &BgThread, t: &mut VclTransaction) {
-    let old_t = std::mem::replace(t, VclTransaction::Transition);
-    *t = VclTransaction::Sent(bgt.spawn_req(old_t.into_req(), true));
-}
-
-fn wait_on(bgt: &BgThread, t: &mut VclTransaction) {
-    match t {
-        VclTransaction::Req(_) => {
-            vcl_send(bgt, t);
-            wait_on(bgt, t)
-        }
-        VclTransaction::Sent(rx) => {
-            *t = match rx.blocking_recv().unwrap() {
-                RespMsg::Hdrs(resp) => VclTransaction::Resp(Ok(resp)),
-                RespMsg::Chunk(_) => unreachable!(),
-                RespMsg::Err(e) => VclTransaction::Resp(Err(e)),
-            };
-        }
-        VclTransaction::Resp(_) => (),
-        VclTransaction::Transition => panic!("impossible"),
-    }
-}
-
-fn get_transaction<'a, 'b>(
-    vp_task: &'a mut VPriv<Vec<Entry>>,
-    name: &'b str,
-) -> Result<&'a mut VclTransaction, String> {
-    vp_task
-        .as_mut()
-        .ok_or(format!("reqwest: request \"{}\" isn't initialized", name))?
-        .iter_mut()
-        .find(|e| name == e.name)
-        .map(|e| &mut e.transaction)
-        .ok_or(format!("reqwest: request \"{}\" isn't initialized", name))
-}
-
-pub fn send(
-    _ctx: &Ctx,
-    vp_vcl: &mut VPriv<BgThread>,
-    vp_task: &mut VPriv<Vec<Entry>>,
-    name: &str,
-) -> Result<(), String> {
-    let t = get_transaction(vp_task, name)?;
-
-    match t {
-        VclTransaction::Req(_) => {
-            vcl_send(vp_vcl.as_ref().unwrap(), t);
-            Ok(())
-        }
-        _ => Err(format!("reqwest: request \"{}\" isn't initialized", name)),
-    }
-}
-
-pub fn exists(_ctx: &Ctx, vp_task: &mut VPriv<Vec<Entry>>, name: &str) -> bool {
-    get_transaction(vp_task, name).is_ok()
-}
-
-pub fn set_header(
-    _ctx: &Ctx,
-    vp_task: &mut VPriv<Vec<Entry>>,
-    name: &str,
-    key: &str,
-    value: &str,
-) -> Result<(), String> {
-    let t = get_transaction(vp_task, name)?;
-    if let VclTransaction::Req(_) = t {
-        let old_t = std::mem::replace(t, VclTransaction::Transition);
-        *t = VclTransaction::Req(old_t.into_req().header(key, value));
-        Ok(())
-    } else {
-        Err(format!("reqwest: request \"{}\" isn't initialized", name))
-    }
-}
-
-pub fn set_body(
-    _ctx: &Ctx,
-    vp_task: &mut VPriv<Vec<Entry>>,
-    name: &str,
-    body: &str,
-) -> Result<(), String> {
-    let t = get_transaction(vp_task, name)?;
-    if let VclTransaction::Req(_) = t {
-        let old_t = std::mem::replace(t, VclTransaction::Transition);
-        // it's a bit annoying to have to copy the body, but the request may outlive our task
-        *t = VclTransaction::Req(old_t.into_req().body(body.to_owned()));
-        Ok(())
-    } else {
-        Err(format!("reqwest: request \"{}\" isn't initialized", name))
-    }
-}
-
-pub fn status(
-    _ctx: &Ctx,
-    vp_vcl: &mut VPriv<BgThread>,
-    vp_task: &mut VPriv<Vec<Entry>>,
-    name: &str,
-) -> Result<i64, String> {
-    let t = get_transaction(vp_task, name)?;
-    wait_on(vp_vcl.as_ref().unwrap(), t);
-
-    Ok(t.unwrap_resp().as_ref().map(|rsp| rsp.status).unwrap_or(0))
-}
-
-pub fn header<'a>(
-    _ctx: &Ctx,
-    vp_vcl: &mut VPriv<BgThread>,
-    vp_task: &'a mut VPriv<Vec<Entry>>,
-    name: &str,
-    key: &str,
-) -> Result<Option<&'a [u8]>, String> {
-    let t = get_transaction(vp_task, name)?;
-    wait_on(vp_vcl.as_ref().unwrap(), t);
-
-    Ok(t.unwrap_resp()
-        .as_ref()
-        .ok()
-        .map(|rsp| rsp.headers.get(key).map(|h| h.as_ref()))
-        .unwrap_or(None))
-}
-
-pub fn body_as_string<'a>(
-    _ctx: &Ctx,
-    vp_vcl: &mut VPriv<BgThread>,
-    vp_task: &'a mut VPriv<Vec<Entry>>,
-    name: &str,
-) -> Result<&'a [u8], String> {
-    let t = get_transaction(vp_task, name)?;
-    wait_on(vp_vcl.as_ref().unwrap(), t);
-
-    match t.unwrap_resp() {
-        Err(_) => Ok("".as_ref()),
-        Ok(rsp) => Ok(rsp.body.as_ref().unwrap()),
-    }
-}
-
-pub fn error(
-    _ctx: &Ctx,
-    vp_vcl: &mut VPriv<BgThread>,
-    vp_task: &mut VPriv<Vec<Entry>>,
-    name: &str,
-) -> Result<Option<String>, String> {
-    let t = get_transaction(vp_task, name)?;
-    wait_on(vp_vcl.as_ref().unwrap(), t);
-
-    match t.unwrap_resp() {
-        Err(e) => Ok(Some(e.to_string())),
-        Ok(_) => Ok(None),
     }
 }
 

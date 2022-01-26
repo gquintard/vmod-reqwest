@@ -1144,6 +1144,7 @@ dependencies = [
 [[package]]
 name = "varnish"
 version = "0.0.7"
+source = "git+https://github.com/gquintard/varnish-rs?rev=186f03c7ceb9b1faa18cc298fb1a1f4212a7f7b5#186f03c7ceb9b1faa18cc298fb1a1f4212a7f7b5"
 dependencies = [
  "pkg-config",
  "varnish-sys",
@@ -1152,6 +1153,7 @@ dependencies = [
 [[package]]
 name = "varnish-sys"
 version = "0.0.7"
+source = "git+https://github.com/gquintard/varnish-rs?rev=186f03c7ceb9b1faa18cc298fb1a1f4212a7f7b5#186f03c7ceb9b1faa18cc298fb1a1f4212a7f7b5"
 dependencies = [
  "bindgen",
  "pkg-config",

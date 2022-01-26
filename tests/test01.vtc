@@ -11,26 +11,30 @@ server s1 {
 varnish v1 -arg "-p thread_pool_stack=160k" -vcl+backend {
 	import reqwest from "${vmod}";
 
+	sub vcl_init {
+		new client = reqwest.client();
+	}
+
 	sub vcl_recv {
-		reqwest.init("secure", "GET", "https://example.com");
-		reqwest.send("secure");
+		client.init("secure", "GET", "https://example.com");
+		client.send("secure");
 
-		reqwest.init("faulty", "GET", "....");
+		client.init("faulty", "GET", "....");
 
-		reqwest.init("s1", "GET", "http://${s1_addr}:${s1_port}/my/url");
-		reqwest.set_header("s1", "foo", "bar");
-		reqwest.set_body("s1", "0123456789");
+		client.init("s1", "GET", "http://${s1_addr}:${s1_port}/my/url");
+		client.set_header("s1", "foo", "bar");
+		client.set_body("s1", "0123456789");
 		return (synth(200));
 	}
 
 	sub vcl_synth {
-		reqwest.init("regular", "GET", "http://example.com");
-		set resp.http.regular_status = reqwest.status("regular");
-		set resp.http.secure_status = reqwest.status("secure");
-		set resp.http.faulty_status = reqwest.status("faulty");
-		set resp.http.faulty_error = reqwest.error("faulty");
-		set resp.http.s1_baz = reqwest.header("s1", "baz");
-		set resp.http.s1_body = reqwest.body_as_string("s1");
+		client.init("regular", "GET", "http://example.com");
+		set resp.http.regular_status = client.status("regular");
+		set resp.http.secure_status = client.status("secure");
+		set resp.http.faulty_status = client.status("faulty");
+		set resp.http.faulty_error = client.error("faulty");
+		set resp.http.s1_baz = client.header("s1", "baz");
+		set resp.http.s1_body = client.body_as_string("s1");
 	}
 } -start
 
