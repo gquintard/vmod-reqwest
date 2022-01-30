@@ -6,26 +6,58 @@ It offers similar features to [vmod_curl](https://github.com/varnish/libvmod-cur
 
 As usual, the full VCL API is described in [vmod.vcc](vmod.vcc).
 
-## VCL Example
+## VCL Examples
 
-``` bash
-import request;
+### Send request and use response headers
+``` vcl
+import reqwest;
+
+sub vcl_init {
+	new client = reqwest.client(base_url = "https://www.example.com/sub/directory", follow = 5);
+}
 
 sub vcl_recv {
-	# send a request into the void and don't worry if it complete or not
-	reqwest.init("async", "POST", "https://api.example.com/log")
-	reqwest.set_body("URL = " + req.url);
-	reqwest.send();
-
 	# use an HTTP request to grant (or not) access to the client
-	reqwest.init("sync", "GET", "https://api.example.com/authorized/" + req.http.user);
-	if (reqwest.status("sync") == 200) {
+	client.init("sync", "GET", "https://api.example.com/authorized/" + req.http.user);
+	if (client.status("sync") == 200) {
 		return (lookup);
 	} else {
 		return (synth(403));
 	}
 }
 ```
+
+### Fire-and-forget request with body
+
+``` vcl
+import reqwest;
+
+sub vcl_init {
+	new client = reqwest.client(base_url = "https://www.example.com/sub/directory", follow = 5);
+}
+
+sub vcl_recv {
+	# send a request into the void and don't worry if it complete or not
+	client.init("async", "https://api.example.com/log", "POST")
+	client.set_body("URL = " + req.url);
+	client.send();
+}
+```
+
+### HTTPS backend following up to 5 redirect hops, and brotli auto-decompression
+
+``` vcl
+import reqwest;
+
+sub vcl_init {
+	new client = reqwest.client(base_url = "https://www.example.com/sub/directory", follow = 5, auto_brotli = true);
+}
+
+sub vcl_recv {
+	set req.backend_hint = client.backend();
+}
+```
+
 
 ## Requirements
 

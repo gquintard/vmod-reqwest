@@ -162,8 +162,8 @@ impl client {
         _ctx: &Ctx,
         vp_task: &mut VPriv<Vec<Entry>>,
         name: &str,
-        method: &str,
         url: &str,
+        method: &str,
     ) -> Result<(), String> {
         if vp_task.as_ref().is_none() {
             vp_task.store(Vec::new());
@@ -258,10 +258,6 @@ impl client {
         }
     }
 
-    pub fn exists(&mut self, _ctx: &Ctx, vp_task: &mut VPriv<Vec<Entry>>, name: &str) -> bool {
-        self.get_transaction(vp_task, name).is_ok()
-    }
-
     pub fn set_header(
         &mut self,
         _ctx: &Ctx,
@@ -300,7 +296,10 @@ impl client {
         vp_task: &mut VPriv<Vec<Entry>>,
         name: &str,
     ) -> Result<i64, String> {
-        Ok(self.get_resp(vp_vcl, vp_task, name)?.map(|r| r.status).unwrap_or(0))
+        Ok(self
+            .get_resp(vp_vcl, vp_task, name)?
+            .map(|r| r.status)
+            .unwrap_or(0))
     }
 
     pub fn header<'a>(
@@ -311,7 +310,10 @@ impl client {
         name: &str,
         key: &str,
     ) -> Result<Option<&'a [u8]>, String> {
-        Ok(self.get_resp(vp_vcl, vp_task, name)?.map(|r| r.headers.get(key).map(|h| h.as_ref())).unwrap_or(None))
+        Ok(self
+            .get_resp(vp_vcl, vp_task, name)?
+            .map(|r| r.headers.get(key).map(|h| h.as_ref()))
+            .unwrap_or(None))
     }
 
     pub fn body_as_string<'a>(
@@ -321,7 +323,10 @@ impl client {
         vp_task: &'a mut VPriv<Vec<Entry>>,
         name: &str,
     ) -> Result<&'a [u8], String> {
-        Ok(self.get_resp(vp_vcl, vp_task, name)?.map(|r| r.body.as_ref().unwrap().as_ref()).unwrap_or("".as_bytes()))
+        Ok(self
+            .get_resp(vp_vcl, vp_task, name)?
+            .map(|r| r.body.as_ref().unwrap().as_ref())
+            .unwrap_or("".as_bytes()))
     }
 
     pub fn error(
@@ -563,17 +568,26 @@ unsafe extern "C" fn gethdrs(
     ctx: *const varnish_sys::vrt_ctx,
     be: varnish_sys::VCL_BACKEND,
 ) -> ::std::os::raw::c_int {
-    let VCLBackend { bgt: bgtp, client: client { inner: inner_client }} = ((*be).priv_ as *const VCLBackend).as_ref().unwrap();
+    let VCLBackend {
+        bgt: bgtp,
+        client: client {
+            inner: inner_client,
+        },
+    } = ((*be).priv_ as *const VCLBackend).as_ref().unwrap();
     let bgt = bgtp.as_ref().unwrap();
     let bereq = HTTP::new((*(*ctx).bo).bereq).unwrap();
     let url = match (&inner_client.base_url, inner_client.https) {
-        (Some(url), _) => String::new() + url + bereq.url().unwrap(),
-        (None, true) => {
-            String::new() + "https://" + bereq.header("host").unwrap() + bereq.url().unwrap()
-        }
-        (None, false) => {
-            String::new() + "http://" + bereq.header("host").unwrap() + bereq.url().unwrap()
-        }
+        (Some(url), _) => format!("{}{}", url, bereq.url().unwrap()),
+        (None, true) => format!(
+            "https://{}{}",
+            bereq.header("host").unwrap(),
+            bereq.url().unwrap()
+        ),
+        (None, false) => format!(
+            "http://{}{}",
+            bereq.header("host").unwrap(),
+            bereq.url().unwrap()
+        ),
     };
 
     let (req_body_tx, body) = hyper::body::Body::channel();
