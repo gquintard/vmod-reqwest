@@ -20,9 +20,22 @@ varnish::vtc!(test04);
 varnish::vtc!(test05);
 varnish::vtc!(test06);
 
+macro_rules! init_err {
+    ($n:ident) => {
+        format!("reqwest: request \"{}\" isn't initialized", $n)
+    };
+}
+
+// we add a layer of indirection so we can get a pointer to the inner struct as we are building the
+// larger one (to give to VRT_AddDirector)
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone)]
 struct client {
+    inner: Box<InnerClient>,
+}
+
+#[derive(Debug, Clone)]
+struct InnerClient {
     name: String,
     client: reqwest::Client,
     be: *const varnish_sys::director,
@@ -58,7 +71,7 @@ impl client {
         vp_vcl: &mut VPriv<BgThread>,
         base_url: Option<&str>,
         https: Option<bool>,
-        follow: Option<i64>,
+        follow: i64,
         timeout: Option<Duration>,
         connect_timeout: Option<Duration>,
         auto_gzip: bool,
@@ -101,12 +114,10 @@ impl client {
                 }
             }
         }
-        if let Some(limit) = follow {
-            if limit <= 0 {
-                rcb = rcb.redirect(reqwest::redirect::Policy::none());
-            } else {
-                rcb = rcb.redirect(reqwest::redirect::Policy::limited(limit as usize));
-            }
+        if follow <= 0 {
+            rcb = rcb.redirect(reqwest::redirect::Policy::none());
+        } else {
+            rcb = rcb.redirect(reqwest::redirect::Policy::limited(follow as usize));
         }
         let reqwest_client = match rcb.build() {
             Ok(rc) => rc,
@@ -119,11 +130,13 @@ impl client {
             ctx.fail("reqwest: client() can't take both an https and a base_url argument");
         }
         let mut client = client {
-            name: vcl_name.to_owned(),
-            client: reqwest_client,
-            https: https.unwrap_or(false),
-            be: std::ptr::null(),
-            base_url: base_url.map(|s| s.into()),
+            inner: Box::new(InnerClient {
+                name: vcl_name.to_owned(),
+                client: reqwest_client,
+                https: https.unwrap_or(false),
+                be: std::ptr::null(),
+                base_url: base_url.map(|s| s.into()),
+            }),
         };
 
         let backend_p = Box::into_raw(Box::new(VCLBackend {
@@ -132,7 +145,7 @@ impl client {
             // for it, oh well...
             client: client.clone(),
         })) as *mut VCLBackend;
-        client.be = unsafe {
+        client.inner.be = unsafe {
             varnish_sys::VRT_AddDirector(
                 ctx.raw,
                 METHODS,
@@ -140,7 +153,7 @@ impl client {
                 format!("reqwest_backend_{}\0", vcl_name).as_ptr() as *const i8,
             )
         };
-        assert!(!client.be.is_null());
+        assert!(!client.inner.be.is_null());
         client
     }
 
@@ -162,18 +175,18 @@ impl client {
             url: url.into(),
             headers: Vec::new(),
             body: Body::None,
-            client: self.client.clone(),
+            client: self.inner.client.clone(),
             vcl: true,
         });
 
         match ts
             .iter_mut()
-            .find(|e| e.req_name == name && e.client_name == self.name)
+            .find(|e| e.req_name == name && e.client_name == self.inner.name)
         {
             None => ts.push(Entry {
                 transaction: t,
                 req_name: name.to_owned(),
-                client_name: self.name.to_owned(),
+                client_name: self.inner.name.to_owned(),
             }),
             Some(e) => e.transaction = t,
         }
@@ -210,11 +223,22 @@ impl client {
     ) -> Result<&'a mut VclTransaction, String> {
         vp_task
             .as_mut()
-            .ok_or(format!("reqwest: request \"{}\" isn't initialized", name))?
+            .ok_or(init_err!(name))?
             .iter_mut()
-            .find(|e| name == e.req_name && self.name == e.client_name)
+            .find(|e| name == e.req_name && self.inner.name == e.client_name)
             .map(|e| &mut e.transaction)
-            .ok_or(format!("reqwest: request \"{}\" isn't initialized", name))
+            .ok_or(init_err!(name))
+    }
+
+    fn get_resp<'a, 'b>(
+        &self,
+        vp_vcl: &mut VPriv<BgThread>,
+        vp_task: &'a mut VPriv<Vec<Entry>>,
+        name: &'b str,
+    ) -> Result<Result<&'a mut Response, String>, String> {
+        let t = self.get_transaction(vp_task, name)?;
+        self.wait_on(vp_vcl.as_ref().unwrap(), t);
+        Ok(t.unwrap_resp())
     }
 
     pub fn send(
@@ -226,12 +250,11 @@ impl client {
     ) -> Result<(), String> {
         let t = self.get_transaction(vp_task, name)?;
 
-        match t {
-            VclTransaction::Req(_) => {
-                self.vcl_send(vp_vcl.as_ref().unwrap(), t);
-                Ok(())
-            }
-            _ => Err(format!("reqwest: request \"{}\" isn't initialized", name)),
+        if matches!(t, VclTransaction::Req(_)) {
+            self.vcl_send(vp_vcl.as_ref().unwrap(), t);
+            Ok(())
+        } else {
+            Err(init_err!(name))
         }
     }
 
@@ -247,12 +270,11 @@ impl client {
         key: &str,
         value: &str,
     ) -> Result<(), String> {
-        match self.get_transaction(vp_task, name)? {
-            VclTransaction::Req(req) => {
-                req.headers.push((key.into(), value.into()));
-                Ok(())
-            }
-            _ => Err(format!("reqwest: request \"{}\" isn't initialized", name)),
+        if let VclTransaction::Req(req) = self.get_transaction(vp_task, name)? {
+            req.headers.push((key.into(), value.into()));
+            Ok(())
+        } else {
+            Err(init_err!(name))
         }
     }
 
@@ -263,12 +285,11 @@ impl client {
         name: &str,
         body: &str,
     ) -> Result<(), String> {
-        match self.get_transaction(vp_task, name)? {
-            VclTransaction::Req(req) => {
-                req.body = Body::Full(Vec::from(body));
-                Ok(())
-            }
-            _ => Err(format!("reqwest: request \"{}\" isn't initialized", name)),
+        if let VclTransaction::Req(req) = self.get_transaction(vp_task, name)? {
+            req.body = Body::Full(Vec::from(body));
+            Ok(())
+        } else {
+            Err(init_err!(name))
         }
     }
 
@@ -279,10 +300,7 @@ impl client {
         vp_task: &mut VPriv<Vec<Entry>>,
         name: &str,
     ) -> Result<i64, String> {
-        let t = self.get_transaction(vp_task, name)?;
-        self.wait_on(vp_vcl.as_ref().unwrap(), t);
-
-        Ok(t.unwrap_resp().as_ref().map(|rsp| rsp.status).unwrap_or(0))
+        Ok(self.get_resp(vp_vcl, vp_task, name)?.map(|r| r.status).unwrap_or(0))
     }
 
     pub fn header<'a>(
@@ -293,14 +311,7 @@ impl client {
         name: &str,
         key: &str,
     ) -> Result<Option<&'a [u8]>, String> {
-        let t = self.get_transaction(vp_task, name)?;
-        self.wait_on(vp_vcl.as_ref().unwrap(), t);
-
-        Ok(t.unwrap_resp()
-            .as_ref()
-            .ok()
-            .map(|rsp| rsp.headers.get(key).map(|h| h.as_ref()))
-            .unwrap_or(None))
+        Ok(self.get_resp(vp_vcl, vp_task, name)?.map(|r| r.headers.get(key).map(|h| h.as_ref())).unwrap_or(None))
     }
 
     pub fn body_as_string<'a>(
@@ -310,13 +321,7 @@ impl client {
         vp_task: &'a mut VPriv<Vec<Entry>>,
         name: &str,
     ) -> Result<&'a [u8], String> {
-        let t = self.get_transaction(vp_task, name)?;
-        self.wait_on(vp_vcl.as_ref().unwrap(), t);
-
-        match t.unwrap_resp() {
-            Err(_) => Ok("".as_ref()),
-            Ok(rsp) => Ok(rsp.body.as_ref().unwrap()),
-        }
+        Ok(self.get_resp(vp_vcl, vp_task, name)?.map(|r| r.body.as_ref().unwrap().as_ref()).unwrap_or("".as_bytes()))
     }
 
     pub fn error(
@@ -326,17 +331,14 @@ impl client {
         vp_task: &mut VPriv<Vec<Entry>>,
         name: &str,
     ) -> Result<Option<String>, String> {
-        let t = self.get_transaction(vp_task, name)?;
-        self.wait_on(vp_vcl.as_ref().unwrap(), t);
-
-        match t.unwrap_resp() {
+        match self.get_resp(vp_vcl, vp_task, name)? {
             Err(e) => Ok(Some(e.to_string())),
             Ok(_) => Ok(None),
         }
     }
 
     pub fn backend(&self, _ctx: &Ctx) -> *const varnish_sys::director {
-        self.be
+        self.inner.be
     }
 }
 
@@ -391,9 +393,10 @@ enum Body {
 }
 
 impl VclTransaction {
-    fn unwrap_resp(&self) -> &Result<Response, String> {
+    fn unwrap_resp(&mut self) -> Result<&mut Response, String> {
         match self {
-            VclTransaction::Resp(ref rsp) => rsp,
+            VclTransaction::Resp(Ok(ref mut rsp)) => Ok(rsp),
+            VclTransaction::Resp(Err(e)) => Err(e.to_string()),
             _ => panic!("wrong VclTransaction type"),
         }
     }
@@ -560,10 +563,10 @@ unsafe extern "C" fn gethdrs(
     ctx: *const varnish_sys::vrt_ctx,
     be: varnish_sys::VCL_BACKEND,
 ) -> ::std::os::raw::c_int {
-    let VCLBackend { bgt: bgtp, client } = ((*be).priv_ as *const VCLBackend).as_ref().unwrap();
+    let VCLBackend { bgt: bgtp, client: client { inner: inner_client }} = ((*be).priv_ as *const VCLBackend).as_ref().unwrap();
     let bgt = bgtp.as_ref().unwrap();
     let bereq = HTTP::new((*(*ctx).bo).bereq).unwrap();
-    let url = match (&client.base_url, client.https) {
+    let url = match (&inner_client.base_url, inner_client.https) {
         (Some(url), _) => String::new() + url + bereq.url().unwrap(),
         (None, true) => {
             String::new() + "https://" + bereq.header("host").unwrap() + bereq.url().unwrap()
@@ -577,7 +580,7 @@ unsafe extern "C" fn gethdrs(
     let req = Request {
         method: bereq.method().unwrap().to_string(),
         url,
-        client: client.client.clone(),
+        client: inner_client.client.clone(),
         body: Body::Stream(body),
         vcl: false,
         headers: bereq
@@ -588,6 +591,7 @@ unsafe extern "C" fn gethdrs(
 
     let mut resp_rx = bgt.spawn_req(req);
 
+    // manually dropped a few lines below
     let bcp = Box::into_raw(Box::new(BodyChan {
         chan: req_body_tx,
         rt: &bgt.rt,
@@ -615,6 +619,7 @@ unsafe extern "C" fn gethdrs(
             (*bo.req).doclose = varnish_sys::sess_close_SC_RX_BODY;
         }
     }
+    // manually drop so reqwest knows there's no more body to push
     drop(Box::from_raw(bcp));
 
     let resp = match resp_rx.blocking_recv().unwrap() {
@@ -645,6 +650,7 @@ unsafe extern "C" fn gethdrs(
             cursor: 0,
             chan: Some(resp_rx),
         };
+        // dropped by wrap_vfp_fini from VfpWrapper
         let respp = Box::into_raw(Box::new(brm));
         (*vfe).priv1 = respp as *mut std::ffi::c_void;
         0

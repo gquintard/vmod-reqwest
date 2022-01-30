@@ -9,7 +9,7 @@ $Event event_function
 $Object client(PRIV_VCL,
 	[STRING base_url],
 	[BOOL https],
-	[INT follow],
+	INT follow = 10,
 	[DURATION timeout],
 	[DURATION connect_timeout],
 	BOOL auto_gzip = 1,
