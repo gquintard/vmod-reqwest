@@ -25,8 +25,8 @@ varnish v1 -vcl {
 	}
 
 	sub vcl_synth {
-		client1.init("name", "GET", "http://${s1_addr}:${s1_port}");
-		client2.init("name", "GET", "http://${s2_addr}:${s2_port}");
+		client1.init("name", "http://${s1_addr}:${s1_port}");
+		client2.init("name", "http://${s2_addr}:${s2_port}");
 		set resp.http.s1 = client1.header("name", "server");
 		set resp.http.s2 = client2.header("name", "server");
 	}

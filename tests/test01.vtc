@@ -16,21 +16,22 @@ varnish v1 -vcl+backend {
 	}
 
 	sub vcl_recv {
-		client.init("secure", "GET", "https://example.com");
+		client.init("secure", "https://example.com");
 		client.send("secure");
 
-		client.init("faulty", "GET", "....");
+		client.init("faulty", "....");
 
-		client.init("s1", "GET", "http://${s1_addr}:${s1_port}/my/url");
+		client.init("s1", "http://${s1_addr}:${s1_port}/my/url");
 		client.set_header("s1", "foo", "bar");
 		client.set_body("s1", "0123456789");
 		return (synth(200));
 	}
 
 	sub vcl_synth {
-		client.init("regular", "GET", "http://example.com");
+		client.init("regular", "http://example.com");
 		set resp.http.regular_status = client.status("regular");
 		set resp.http.secure_status = client.status("secure");
+		set resp.http.secure_error = client.error("secure");
 		set resp.http.faulty_status = client.status("faulty");
 		set resp.http.faulty_error = client.error("faulty");
 		set resp.http.s1_baz = client.header("s1", "baz");
