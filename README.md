@@ -18,7 +18,7 @@ sub vcl_init {
 
 sub vcl_recv {
 	# use an HTTP request to grant (or not) access to the client
-	client.init("sync", "GET", "https://api.example.com/authorized/" + req.http.user);
+	client.init("sync", "https://api.example.com/authorized/" + req.http.user);
 	if (client.status("sync") == 200) {
 		return (lookup);
 	} else {
