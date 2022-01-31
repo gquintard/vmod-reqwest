@@ -1,5 +1,4 @@
-# Copyright (c) 2021 Guillaume Quintard Author: Guillaume Quintard
-# <guillaume.quintard@gmail.com>
+# Copyright (c) 2021-2022 Guillaume Quintard Author: Guillaume Quintard
 
 $Module reqwest 3 "HTTP requests"
 
