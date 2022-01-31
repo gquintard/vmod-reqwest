@@ -68,12 +68,22 @@ You'll need:
 
 ## Build and test
 
+With `cargo` only:
+
 ``` bash
 cargo build --release
 cargo test --release
 ```
 
 The vmod file will be found at `target/release/libvmod_reqwest.so`.
+
+Alternatively, if you have `jq` and `rst2man`, you can use `build.sh`
+
+``` bash
+./build [OUTDIR]
+```
+
+This will place the `so` file as well as the generated documentation in the `OUT` directory (or in the current directory if `OUT` wasn't specified).
 
 ## Packages
 
