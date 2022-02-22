@@ -2,7 +2,7 @@
 
 This is a vmod for [varnish](http://varnish-cache.org/) to send and receive HTTP requests from VCL, leveraging the [reqwest crate](https://docs.rs/reqwest/latest/reqwest/).
 
-It offers similar features to [vmod_curl](https://github.com/varnish/libvmod-curl), but notably offers fire-and-forget capabilities and parallel request handling.
+It offers dynamic backend (no more reloading the VCL because of DNS changes) and similar features to [vmod_curl](https://github.com/varnish/libvmod-curl), but notably offers fire-and-forget capabilities and parallel request handling.
 
 As usual, the full VCL API is described in [vmod.vcc](vmod.vcc).
 
