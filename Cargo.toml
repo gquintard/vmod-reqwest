@@ -5,12 +5,12 @@ edition = "2021"
 license = "BSD-3-Clause"
 
 [build-dependencies]
-varnish = "0.0.8"
-varnish-sys = "0.0.8"
+varnish = "0.0.9"
+varnish-sys = "0.0.9"
 
 [dependencies]
-varnish = "0.0.8"
-varnish-sys = "0.0.8"
+varnish = "0.0.9"
+varnish-sys = "0.0.9"
 regex = "1.5"
 lru = "0.7.1"
 bytes = "1.1.0"

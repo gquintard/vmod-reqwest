@@ -630,7 +630,7 @@ unsafe extern "C" fn gethdrs(
 
         if (*bo.req).req_body_status == varnish_sys::BS_ERROR.as_ptr() {
             assert!(i < 0);
-            (*bo.req).doclose = varnish_sys::sess_close_SC_RX_BODY;
+            (*bo.req).doclose = &varnish_sys::SC_RX_BODY[0];
         }
     }
     // manually drop so reqwest knows there's no more body to push
@@ -654,6 +654,7 @@ unsafe extern "C" fn gethdrs(
     let htc = (*(*ctx).bo).htc.as_mut().unwrap(); // TODO: check ws return
     htc.magic = varnish_sys::HTTP_CONN_MAGIC;
     htc.body_status = varnish_sys::BS_CHUNKED.as_ptr();
+    htc.doclose = &varnish_sys::SC_REM_CLOSE[0];
 
     let vfe = varnish_sys::VFP_Push((*(*ctx).bo).vfc, &REQWEST_VFP.vfp);
     if vfe.is_null() {

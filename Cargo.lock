@@ -1231,9 +1231,9 @@ dependencies = [
 
 [[package]]
 name = "varnish"
-version = "0.0.8"
+version = "0.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "309e8097404d44645437f99499b310f4c149c7b6df3f45d7d0879c2e1e5a5a46"
+checksum = "b00dc7a5ba3656e61f006023865013d03a2b1ff457fed7133803103ac292465c"
 dependencies = [
  "pkg-config",
  "varnish-sys",
@@ -1241,9 +1241,9 @@ dependencies = [
 
 [[package]]
 name = "varnish-sys"
-version = "0.0.8"
+version = "0.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6871e3e21c20ed59f6e2d73d0d6f4b23d89be7c4b66e3f936e2b3fe4fdc11c71"
+checksum = "f2af417319bc3e2554142e8b29111d540f9c017dcbbe8e806a31e77ef5654087"
 dependencies = [
  "bindgen",
  "pkg-config",
@@ -1269,7 +1269,7 @@ checksum = "5fecdca9a5291cc2b8dcf7dc02453fee791a280f3743cb0905f8822ae463b3fe"
 
 [[package]]
 name = "vmod_reqwest"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "bytes",
  "futures",

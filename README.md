@@ -6,6 +6,14 @@ It offers dynamic backend (no more reloading the VCL because of DNS changes) and
 
 As usual, the full VCL API is described in [vmod.vcc](vmod.vcc).
 
+## Version matching
+
+| vmod-reqwest | varnish |
+| :----------- | :-----: |
+| 0.0.3        | 7.1     |
+| 0.0.2        | 7.0     |
+| 0.0.1        | 7.0     |
+
 ## VCL Examples
 
 ### Send request and use response headers
