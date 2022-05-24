@@ -23,8 +23,8 @@ Create a `client` object that can be used both for backend requests and in-vcl r
 
 `base_url` and `https`: dictates how the URL of a backend request is built:
 - if `base_url` is specified, the full URL used is `base_url` + `bereq.url`, which means `base_url` nees to specify a scheme (e.g. `http://`) and a host (e.g. `www.example.com).
-- otherwise, if `https` is set to `true`, the URL is `https://` + `bereq.http.host` + `bereq.url`
-- otherwise, the URL is `http://` + `bereq.http.host` + `bereq.url`
+- otherwise, if `bereq.url`, doesn't start with a `/`, use it as-is
+- otherwise, the URL is `http(s)://` + `bereq.http.host` + `bereq.url`, using `https` to decide on the scheme (will fail if there's no bereq.http.host)
 
 `base_url` and `https` are mutually exclusive and can't be specified together.
 

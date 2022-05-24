@@ -6,7 +6,7 @@ use std::io::Write;
 use std::os::raw::{c_uint, c_void};
 use std::ptr;
 use std::time::Duration;
-use varnish::vcl::ctx::{Ctx, Event};
+use varnish::vcl::ctx::{Ctx, Event, LogTag};
 use varnish::vcl::http::HTTP;
 use varnish::vcl::vpriv::VPriv;
 
@@ -19,6 +19,7 @@ varnish::vtc!(test03);
 varnish::vtc!(test04);
 varnish::vtc!(test05);
 varnish::vtc!(test06);
+varnish::vtc!(test07);
 
 macro_rules! init_err {
     ($n:ident) => {
@@ -565,7 +566,7 @@ unsafe extern "C" fn body_send_iterate(
 }
 
 unsafe extern "C" fn gethdrs(
-    ctx: *const varnish_sys::vrt_ctx,
+    ctxp: *const varnish_sys::vrt_ctx,
     be: varnish_sys::VCL_BACKEND,
 ) -> ::std::os::raw::c_int {
     let VCLBackend {
@@ -574,22 +575,33 @@ unsafe extern "C" fn gethdrs(
             inner: inner_client,
         },
     } = ((*be).priv_ as *const VCLBackend).as_ref().unwrap();
+    let mut ctx = Ctx::new(ctxp as *mut varnish_sys::vrt_ctx);
     let bgt = bgtp.as_ref().unwrap();
-    let bereq = HTTP::new((*(*ctx).bo).bereq).unwrap();
-    let url = match (&inner_client.base_url, inner_client.https) {
-        (Some(url), _) => format!("{}{}", url, bereq.url().unwrap()),
-        (None, true) => format!(
-            "https://{}{}",
-            bereq.header("host").unwrap(),
-            bereq.url().unwrap()
-        ),
-        (None, false) => format!(
-            "http://{}{}",
-            bereq.header("host").unwrap(),
-            bereq.url().unwrap()
-        ),
-    };
+    let bereq = ctx.http_bereq.as_ref().unwrap();
 
+    let bereq_url = bereq.url().unwrap();
+
+    let url = if let Some(base_url) = &inner_client.base_url {
+        // if the client has a base_url, prepend it to bereq.url
+        format!("{}{}", base_url, bereq_url)
+    } else if bereq_url.starts_with("/") {
+        // otherwise, if bereq.url looks like a path, try to find a host to build a full URL
+        if let Some(host) = bereq.header("host") {
+            format!(
+                "{}://{}{}", 
+                if inner_client.https { "https" } else { "http" },
+                host,
+                bereq_url
+                )
+        } else {
+            ctx.log(LogTag::Error, "no host found (reqwest.client doesn't have a base_url, bereq.url doesn't specify a host and req.http.host is unset)");
+            return 1;
+        }
+    } else {
+        // else use bereq.url as-is
+        bereq_url.to_string()
+    };
+dbg!(&url);
     let (req_body_tx, body) = hyper::body::Body::channel();
     let req = Request {
         method: bereq.method().unwrap().to_string(),
@@ -602,7 +614,7 @@ unsafe extern "C" fn gethdrs(
             .map(|(k, v)| (k.into(), v.into()))
             .collect(),
     };
-
+dbg!(&req.headers);
     let mut resp_rx = bgt.spawn_req(req);
 
     // manually dropped a few lines below
@@ -612,7 +624,7 @@ unsafe extern "C" fn gethdrs(
     }));
     let p = bcp as *mut c_void;
     // mimicking V1F_SendReq in varnish-cache
-    let bo = (*ctx).bo.as_mut().unwrap();
+    let bo = (*ctx.raw).bo.as_mut().unwrap();
     if !(*bo).bereq_body.is_null() {
         varnish_sys::ObjIterate(bo.wrk, bo.bereq_body, p, Some(body_send_iterate), 0);
     } else if !bo.req.is_null() && (*bo.req).req_body_status != varnish_sys::BS_NONE.as_ptr() {
@@ -641,22 +653,22 @@ unsafe extern "C" fn gethdrs(
         RespMsg::Err(_) => return 1,
         _ => unreachable!(),
     };
-    let mut beresp = HTTP::new((*(*ctx).bo).beresp).unwrap();
+    let mut beresp = ctx.http_beresp.unwrap();
     beresp.set_status(resp.status as u16);
     beresp.set_proto("HTTP/1.1").unwrap();
     for (k, v) in &resp.headers {
         beresp.set_header(k.as_str(), v.to_str().unwrap()).unwrap();
     }
-    (*(*ctx).bo).htc = varnish_sys::WS_Alloc(
-        (*(*ctx).bo).ws.as_mut_ptr(),
+    (*(*ctx.raw).bo).htc = varnish_sys::WS_Alloc(
+        (*(*ctx.raw).bo).ws.as_mut_ptr(),
         std::mem::size_of::<varnish_sys::http_conn>() as u32,
     ) as *mut varnish_sys::http_conn;
-    let htc = (*(*ctx).bo).htc.as_mut().unwrap(); // TODO: check ws return
+    let htc = (*(*ctx.raw).bo).htc.as_mut().unwrap(); // TODO: check ws return
     htc.magic = varnish_sys::HTTP_CONN_MAGIC;
     htc.body_status = varnish_sys::BS_CHUNKED.as_ptr();
     htc.doclose = &varnish_sys::SC_REM_CLOSE[0];
 
-    let vfe = varnish_sys::VFP_Push((*(*ctx).bo).vfc, &REQWEST_VFP.vfp);
+    let vfe = varnish_sys::VFP_Push((*(*ctx.raw).bo).vfc, &REQWEST_VFP.vfp);
     if vfe.is_null() {
         1 // TODO better err code
     } else {

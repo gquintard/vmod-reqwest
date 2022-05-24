@@ -1,0 +1,47 @@
+varnishtest "smart URL building"
+
+server s1 {
+	rxreq
+	expect req.url == "/path_in_full_url"
+	expect req.http.host == "original_host"
+	txresp -body "first"
+
+	rxreq
+	expect req.url == "/path_with_host"
+	txresp -body "second"
+} -start
+
+# VCL, no backend needed
+varnish v1 -vcl {
+	import reqwest from "${vmod}";
+	import std;
+
+	backend s1 none;
+
+	sub vcl_init {
+		new client = reqwest.client();
+	}
+
+	sub vcl_backend_fetch {
+		set bereq.url = bereq.http.url;
+		set bereq.backend = client.backend();
+	}
+} -start
+varnish v1 -cliok "param.set debug +syncvsl"
+
+client c1 {
+	# prevent parsing of the URL by varnish, stuffing it into a header instead
+	txreq -hdr "url: http://${s1_addr}:${s1_port}/path_in_full_url" -hdr "host: original_host"
+	rxresp
+	expect resp.status == 200
+	expect resp.body == "first"
+
+	txreq -hdr "url: /path_with_host" -hdr "host: ${s1_addr}:${s1_port}"
+	rxresp
+	expect resp.status == 200
+	expect resp.body == "second"
+
+	txreq -proto "HTTP/1.0" -hdr "url: /path_without_host"
+	rxresp
+	expect resp.status == 503
+} -run
