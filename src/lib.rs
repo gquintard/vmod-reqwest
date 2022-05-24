@@ -1,17 +1,19 @@
 varnish::boilerplate!();
 
+use anyhow::{Error, Result};
 use bytes::Bytes;
 use std::boxed::Box;
 use std::io::Write;
 use std::os::raw::{c_uint, c_void};
 use std::ptr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use varnish::vcl::ctx::{Ctx, Event, LogTag};
-use varnish::vcl::http::HTTP;
-use varnish::vcl::vpriv::VPriv;
-
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedSender};
+use varnish::vcl::ctx::{Ctx, Event, LogTag};
+use varnish::vcl::probe;
+use varnish::vcl::probe::Probe;
 use varnish::vcl::processor::{PullResult, VFPCtx, VFP};
+use varnish::vcl::vpriv::VPriv;
 
 varnish::vtc!(test01);
 varnish::vtc!(test02);
@@ -20,6 +22,7 @@ varnish::vtc!(test04);
 varnish::vtc!(test05);
 varnish::vtc!(test06);
 varnish::vtc!(test07);
+varnish::vtc!(test08);
 
 macro_rules! init_err {
     ($n:ident) => {
@@ -44,25 +47,78 @@ struct InnerClient {
     base_url: Option<String>,
 }
 
-struct VCLBackend {
+struct ProbeState<'a> {
+    spec: Probe<'a>,
+    history: AtomicU64,
+    health_changed: std::time::SystemTime,
+    url: reqwest::Url,
+    join_handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+struct VCLBackend<'a> {
     bgt: *const BgThread,
     client: client,
+    probe_state: Option<ProbeState<'a>>,
 }
 
 const METHODS: *const varnish_sys::vdi_methods = &varnish_sys::vdi_methods {
     magic: varnish_sys::VDI_METHODS_MAGIC,
     type_: "test_be\0".as_ptr() as *const std::os::raw::c_char,
-    gethdrs: Some(gethdrs),
-    finish: Some(finish),
+    gethdrs: Some(be_gethdrs),
+    finish: Some(be_finish),
     destroy: None,
-    event: None,
+    event: Some(be_event),
     getip: None,
-    healthy: None,
+    healthy: Some(be_healthy),
     http1pipe: None,
     list: None,
     panic: None,
     resolve: None,
 } as *const varnish_sys::vdi_methods;
+
+fn build_probe_state<'a>(mut probe: Probe<'a>, base_url: Option<&str>) -> Result<ProbeState<'a>> {
+    // sanitize probe (see vbp_set_defaults in Varnish Cache)
+    if probe.timeout.is_zero() {
+        probe.timeout = Duration::from_secs(2);
+    }
+    if probe.interval.is_zero() {
+        probe.timeout = Duration::from_secs(5);
+    }
+    if probe.window == 0 {
+        probe.window = 8;
+    }
+    if probe.threshold == 0 {
+        probe.window = 3;
+    }
+    if probe.exp_status == 0 {
+        probe.exp_status = 200;
+    }
+    if probe.initial == 0 {
+        probe.initial = probe.threshold - 1;
+    }
+    probe.initial = std::cmp::min(probe.initial, probe.threshold);
+
+    let spec_url = match probe.request {
+        probe::Request::URL(ref u) => u,
+        _ => return Err(Error::msg("can't use a probe without .url")),
+    };
+    let url = if let Some(base_url) = base_url {
+        reqwest::Url::parse(&format!("{}{}", base_url, spec_url))?
+    } else if spec_url.starts_with('/') {
+        return Err(Error::msg(
+            "client has no .base_url, and the probe doesn't have a fully-qualified URL as ",
+        ));
+    } else {
+        reqwest::Url::parse(spec_url)?
+    };
+    Ok(ProbeState {
+        spec: probe,
+        history: AtomicU64::new(0),
+        health_changed: std::time::SystemTime::now(),
+        join_handle: None,
+        url,
+    })
+}
 
 impl client {
     #[allow(clippy::too_many_arguments)]
@@ -82,6 +138,7 @@ impl client {
         accept_invalid_hostnames: bool,
         http_proxy: Option<&str>,
         https_proxy: Option<&str>,
+        probe: Option<Probe>,
     ) -> Self {
         let mut rcb = reqwest::ClientBuilder::new()
             .brotli(auto_brotli)
@@ -140,11 +197,22 @@ impl client {
             }),
         };
 
+        let probe_state = match probe {
+            Some(spec) => {
+                match build_probe_state(spec, client.inner.base_url.as_deref()) {
+                    Ok(probe_state) => Some(probe_state),
+                    Err(e) => {
+                        ctx.fail(&e.to_string());
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
         let backend_p = Box::into_raw(Box::new(VCLBackend {
             bgt: vp_vcl.as_ref().unwrap() as *const BgThread,
-            // annoying: we need to clone the whole string because we don't have a stable address
-            // for it, oh well...
             client: client.clone(),
+            probe_state,
         })) as *mut VCLBackend;
         client.inner.be = unsafe {
             varnish_sys::VRT_AddDirector(
@@ -338,7 +406,7 @@ impl client {
         name: &str,
     ) -> Result<Option<String>, String> {
         match self.get_resp(vp_vcl, vp_task, name)? {
-            Err(e) => Ok(Some(e.to_string())),
+            Err(e) => Ok(Some(e)),
             Ok(_) => Ok(None),
         }
     }
@@ -565,7 +633,7 @@ unsafe extern "C" fn body_send_iterate(
     }
 }
 
-unsafe extern "C" fn gethdrs(
+unsafe extern "C" fn be_gethdrs(
     ctxp: *const varnish_sys::vrt_ctx,
     be: varnish_sys::VCL_BACKEND,
 ) -> ::std::os::raw::c_int {
@@ -574,8 +642,18 @@ unsafe extern "C" fn gethdrs(
         client: client {
             inner: inner_client,
         },
+        ..
     } = ((*be).priv_ as *const VCLBackend).as_ref().unwrap();
     let mut ctx = Ctx::new(ctxp as *mut varnish_sys::vrt_ctx);
+
+    if be_healthy(ctxp, be, ptr::null_mut()) != 1 {
+        ctx.log(
+            varnish::vcl::ctx::LogTag::FetchError,
+            &format!("backend {}: unhealthy", &inner_client.name),
+        );
+        return -1;
+    }
+
     let bgt = bgtp.as_ref().unwrap();
     let bereq = ctx.http_bereq.as_ref().unwrap();
 
@@ -584,17 +662,17 @@ unsafe extern "C" fn gethdrs(
     let url = if let Some(base_url) = &inner_client.base_url {
         // if the client has a base_url, prepend it to bereq.url
         format!("{}{}", base_url, bereq_url)
-    } else if bereq_url.starts_with("/") {
+    } else if bereq_url.starts_with('/') {
         // otherwise, if bereq.url looks like a path, try to find a host to build a full URL
         if let Some(host) = bereq.header("host") {
             format!(
-                "{}://{}{}", 
+                "{}://{}{}",
                 if inner_client.https { "https" } else { "http" },
                 host,
                 bereq_url
-                )
+            )
         } else {
-            ctx.log(LogTag::Error, "no host found (reqwest.client doesn't have a base_url, bereq.url doesn't specify a host and req.http.host is unset)");
+            ctx.log(LogTag::Error, "no host found (reqwest.client doesn't have a base_url, bereq.url doesn't specify a host and bereq.http.host is unset)");
             return 1;
         }
     } else {
@@ -668,9 +746,9 @@ unsafe extern "C" fn gethdrs(
     htc.body_status = varnish_sys::BS_CHUNKED.as_ptr();
     htc.doclose = &varnish_sys::SC_REM_CLOSE[0];
 
-    let vfe = varnish_sys::VFP_Push((*(*ctx.raw).bo).vfc, &REQWEST_VFP.vfp);
+    let vfe = varnish_sys::VFP_Push((*(*ctxp).bo).vfc, &REQWEST_VFP.vfp);
     if vfe.is_null() {
-        1 // TODO better err code
+        -1 // TODO better err code
     } else {
         let brm = BackendResp {
             bytes: None,
@@ -684,7 +762,110 @@ unsafe extern "C" fn gethdrs(
     }
 }
 
-unsafe extern "C" fn finish(ctx: *const varnish_sys::vrt_ctx, _arg1: varnish_sys::VCL_BACKEND) {
+unsafe extern "C" fn be_event(be: varnish_sys::VCL_BACKEND, e: varnish_sys::vcl_event_e) {
+    let event = Event::new(e);
+    let VCLBackend {
+        probe_state,
+        bgt: bgtp,
+        ..
+    } = ((*be).priv_ as *mut VCLBackend).as_mut().unwrap();
+
+    let bgt = bgtp.as_ref().unwrap();
+    // nothing to do
+    let mut probe_state = match probe_state {
+        None => return,
+        Some(ref mut probe_state) => probe_state,
+    };
+
+    // enter the runtime to
+    let _guard = bgt.rt.enter();
+    match event {
+        // start the probing loop
+        Event::Warm => {
+            probe_state.join_handle = Some(bgt.rt.spawn(async {
+                let mut h = 0_u64;
+                for i in 0..std::cmp::min(probe_state.spec.initial, 64) {
+                    h |= 1 << i;
+                }
+                let mut i = 1;
+                loop {
+                    println!(
+                        "--------------------------------------------- sending {i} {:?}",
+                        probe_state.spec.timeout
+                    );
+                    i += 1;
+                    let new_bit = match reqwest::ClientBuilder::new()
+                        .timeout(probe_state.spec.timeout)
+                        .build()
+                        .unwrap()
+                        .get(probe_state.url.clone())
+                        .send()
+                        .await
+                        .map(|r| r.status().as_u16())
+                    {
+                        Err(e) => {
+                            println!("{:?}", e);
+                            0
+                        }
+                        Ok(status) if status as u32 == probe_state.spec.exp_status => 1,
+                        Ok(status) => {
+                            println!(
+                                "wrong status, expected {}, got {}",
+                                probe_state.spec.exp_status, status
+                            );
+                            0
+                        }
+                    };
+                    println!("--------------------------------------------- received {new_bit}");
+                    h = h.wrapping_shl(1) | new_bit;
+                    probe_state.history.store(h, Ordering::Relaxed);
+                    tokio::time::sleep(probe_state.spec.interval).await;
+                }
+            }));
+        }
+        Event::Cold => {
+            probe_state.join_handle.as_ref().unwrap().abort();
+            probe_state.join_handle = None;
+        }
+        _ => {}
+    }
+}
+
+unsafe extern "C" fn be_healthy(
+    _ctx: *const varnish_sys::vrt_ctx,
+    be: varnish_sys::VCL_BACKEND,
+    changed: *mut varnish_sys::VCL_TIME,
+) -> varnish_sys::VCL_BOOL {
+    let VCLBackend { probe_state, .. } = ((*be).priv_ as *const VCLBackend).as_ref().unwrap();
+
+    let probe_state = match probe_state {
+        None => return 1,
+        Some(ps) => ps,
+    };
+    if !changed.is_null() {
+        *changed = probe_state
+            .health_changed
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+    }
+
+    assert!(probe_state.spec.window <= 64);
+
+    let h = probe_state.history.load(Ordering::Relaxed);
+    println!(
+        "--------------------------------------------- checking {:b}",
+        h
+    );
+    if (h.wrapping_shl(64_u32 - probe_state.spec.window)).count_ones() < probe_state.spec.threshold
+    {
+        0
+    } else {
+        1
+    }
+}
+
+unsafe extern "C" fn be_finish(ctx: *const varnish_sys::vrt_ctx, _arg1: varnish_sys::VCL_BACKEND) {
     (*(*ctx).bo).htc = ptr::null_mut();
 }
 
