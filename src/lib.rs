@@ -601,7 +601,7 @@ unsafe extern "C" fn gethdrs(
         // else use bereq.url as-is
         bereq_url.to_string()
     };
-dbg!(&url);
+
     let (req_body_tx, body) = hyper::body::Body::channel();
     let req = Request {
         method: bereq.method().unwrap().to_string(),
@@ -614,7 +614,7 @@ dbg!(&url);
             .map(|(k, v)| (k.into(), v.into()))
             .collect(),
     };
-dbg!(&req.headers);
+
     let mut resp_rx = bgt.spawn_req(req);
 
     // manually dropped a few lines below
