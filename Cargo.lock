@@ -53,6 +53,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyhow"
+version = "1.0.57"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08f9b8508dccb7687a1d6c4ce66b2b0ecef467c94667de27d8d7fe1f8d2a9cdc"
+
+[[package]]
 name = "async-compression"
 version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1232,8 +1238,6 @@ dependencies = [
 [[package]]
 name = "varnish"
 version = "0.0.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b00dc7a5ba3656e61f006023865013d03a2b1ff457fed7133803103ac292465c"
 dependencies = [
  "pkg-config",
  "varnish-sys",
@@ -1242,8 +1246,6 @@ dependencies = [
 [[package]]
 name = "varnish-sys"
 version = "0.0.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2af417319bc3e2554142e8b29111d540f9c017dcbbe8e806a31e77ef5654087"
 dependencies = [
  "bindgen",
  "pkg-config",
@@ -1271,6 +1273,7 @@ checksum = "5fecdca9a5291cc2b8dcf7dc02453fee791a280f3743cb0905f8822ae463b3fe"
 name = "vmod_reqwest"
 version = "0.0.3"
 dependencies = [
+ "anyhow",
  "bytes",
  "futures",
  "futures-util",
