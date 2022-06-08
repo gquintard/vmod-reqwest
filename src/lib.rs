@@ -1,19 +1,21 @@
 varnish::boilerplate!();
 
-use anyhow::{Error, Result};
+use anyhow::{anyhow, bail, Error, Result};
 use bytes::Bytes;
 use std::boxed::Box;
 use std::io::Write;
 use std::os::raw::{c_uint, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedSender};
-use varnish::vcl::ctx::{Ctx, Event, LogTag};
+use varnish::vcl::ctx::{log, Ctx, Event, LogTag};
 use varnish::vcl::probe;
 use varnish::vcl::probe::Probe;
 use varnish::vcl::processor::{PullResult, VFPCtx, VFP};
 use varnish::vcl::vpriv::VPriv;
+use varnish::vcl::vsb::Vsb;
 
 varnish::vtc!(test01);
 varnish::vtc!(test02);
@@ -23,23 +25,17 @@ varnish::vtc!(test05);
 varnish::vtc!(test06);
 varnish::vtc!(test07);
 varnish::vtc!(test08);
+varnish::vtc!(test09);
 
 macro_rules! init_err {
     ($n:ident) => {
-        format!("reqwest: request \"{}\" isn't initialized", $n)
+        anyhow!("reqwest: request \"{}\" isn't initialized", $n)
     };
 }
 
-// we add a layer of indirection so we can get a pointer to the inner struct as we are building the
-// larger one (to give to VRT_AddDirector)
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone)]
 struct client {
-    inner: Box<InnerClient>,
-}
-
-#[derive(Debug, Clone)]
-struct InnerClient {
     name: String,
     client: reqwest::Client,
     be: *const varnish_sys::director,
@@ -53,17 +49,18 @@ struct ProbeState<'a> {
     health_changed: std::time::SystemTime,
     url: reqwest::Url,
     join_handle: Option<tokio::task::JoinHandle<()>>,
+    avg: Mutex<f64>,
 }
 
 struct VCLBackend<'a> {
     bgt: *const BgThread,
-    client: client,
+    client: Box<client>,
     probe_state: Option<ProbeState<'a>>,
 }
 
-const METHODS: *const varnish_sys::vdi_methods = &varnish_sys::vdi_methods {
+const METHODS: varnish_sys::vdi_methods = varnish_sys::vdi_methods {
     magic: varnish_sys::VDI_METHODS_MAGIC,
-    type_: "test_be\0".as_ptr() as *const std::os::raw::c_char,
+    type_: "reqwest\0".as_ptr() as *const std::os::raw::c_char,
     gethdrs: Some(be_gethdrs),
     finish: Some(be_finish),
     destroy: None,
@@ -71,9 +68,16 @@ const METHODS: *const varnish_sys::vdi_methods = &varnish_sys::vdi_methods {
     getip: None,
     healthy: Some(be_healthy),
     http1pipe: None,
-    list: None,
+    list: Some(be_list),
     panic: None,
     resolve: None,
+};
+const METHODS_WITH_PROBE: *const varnish_sys::vdi_methods =
+    &varnish_sys::vdi_methods { ..METHODS } as *const varnish_sys::vdi_methods;
+
+const METHODS_WITHOUT_PROBE: *const varnish_sys::vdi_methods = &varnish_sys::vdi_methods {
+    list: None,
+    ..METHODS
 } as *const varnish_sys::vdi_methods;
 
 fn build_probe_state<'a>(mut probe: Probe<'a>, base_url: Option<&str>) -> Result<ProbeState<'a>> {
@@ -100,14 +104,12 @@ fn build_probe_state<'a>(mut probe: Probe<'a>, base_url: Option<&str>) -> Result
 
     let spec_url = match probe.request {
         probe::Request::URL(ref u) => u,
-        _ => return Err(Error::msg("can't use a probe without .url")),
+        _ => bail!("can't use a probe without .url"),
     };
     let url = if let Some(base_url) = base_url {
         reqwest::Url::parse(&format!("{}{}", base_url, spec_url))?
     } else if spec_url.starts_with('/') {
-        return Err(Error::msg(
-            "client has no .base_url, and the probe doesn't have a fully-qualified URL as ",
-        ));
+        bail!("client has no .base_url, and the probe doesn't have a fully-qualified URL as ",);
     } else {
         reqwest::Url::parse(spec_url)?
     };
@@ -117,6 +119,7 @@ fn build_probe_state<'a>(mut probe: Probe<'a>, base_url: Option<&str>) -> Result
         health_changed: std::time::SystemTime::now(),
         join_handle: None,
         url,
+        avg: Mutex::new(0_f64),
     })
 }
 
@@ -139,7 +142,7 @@ impl client {
         http_proxy: Option<&str>,
         https_proxy: Option<&str>,
         probe: Option<Probe>,
-    ) -> Self {
+    ) -> Result<Self> {
         let mut rcb = reqwest::ClientBuilder::new()
             .brotli(auto_brotli)
             .deflate(auto_deflate)
@@ -153,77 +156,51 @@ impl client {
             rcb = rcb.connect_timeout(t);
         }
         if let Some(proxy) = http_proxy {
-            match reqwest::Proxy::http(proxy) {
-                Ok(p) => {
-                    rcb = rcb.proxy(p);
-                }
-                Err(e) => {
-                    ctx.fail(&e.to_string());
-                }
-            }
+            rcb = rcb.proxy(reqwest::Proxy::http(proxy)?);
         }
         if let Some(proxy) = https_proxy {
-            match reqwest::Proxy::http(proxy) {
-                Ok(p) => {
-                    rcb = rcb.proxy(p);
-                }
-                Err(e) => {
-                    ctx.fail(&e.to_string());
-                }
-            }
+            rcb = rcb.proxy(reqwest::Proxy::http(proxy)?);
         }
         if follow <= 0 {
             rcb = rcb.redirect(reqwest::redirect::Policy::none());
         } else {
             rcb = rcb.redirect(reqwest::redirect::Policy::limited(follow as usize));
         }
-        let reqwest_client = match rcb.build() {
-            Ok(rc) => rc,
-            Err(e) => {
-                ctx.fail(&e.to_string());
-                reqwest::Client::new()
-            }
-        };
-        if https.is_some() && base_url.is_some() {
-            ctx.fail("reqwest: client() can't take both an https and a base_url argument");
-        }
-        let mut client = client {
-            inner: Box::new(InnerClient {
-                name: vcl_name.to_owned(),
-                client: reqwest_client,
-                https: https.unwrap_or(false),
-                be: std::ptr::null(),
-                base_url: base_url.map(|s| s.into()),
-            }),
-        };
+        let reqwest_client = rcb.build()?;
 
-        let probe_state = match probe {
-            Some(spec) => {
-                match build_probe_state(spec, client.inner.base_url.as_deref()) {
-                    Ok(probe_state) => Some(probe_state),
-                    Err(e) => {
-                        ctx.fail(&e.to_string());
-                        None
-                    }
-                }
-            }
-            None => None,
+        if https.is_some() && base_url.is_some() {
+            bail!("reqwest: client() can't take both an https and a base_url argument");
+        }
+        let mut client = Box::new(client {
+            name: vcl_name.to_owned(),
+            client: reqwest_client,
+            https: https.unwrap_or(false),
+            be: std::ptr::null(),
+            base_url: base_url.map(|s| s.into()),
+        });
+
+        let (probe_state, methods) = match probe {
+            Some(spec) => (
+                Some(build_probe_state(spec, client.base_url.as_deref())?),
+                METHODS_WITH_PROBE,
+            ),
+            None => (None, METHODS_WITHOUT_PROBE),
         };
         let backend_p = Box::into_raw(Box::new(VCLBackend {
             bgt: vp_vcl.as_ref().unwrap() as *const BgThread,
             client: client.clone(),
             probe_state,
         })) as *mut VCLBackend;
-        client.inner.be = unsafe {
+        client.be = unsafe {
             varnish_sys::VRT_AddDirector(
                 ctx.raw,
-                METHODS,
+                methods,
                 backend_p as *mut std::ffi::c_void,
-                format!("reqwest_backend_{}\0", vcl_name).as_ptr() as *const i8,
+                format!("{}\0", vcl_name).as_ptr() as *const i8,
             )
         };
-        assert!(!client.inner.be.is_null());
-        client
+        assert!(!client.be.is_null());
+        Ok(*client)
     }
 
     pub fn init(
@@ -233,7 +210,7 @@ impl client {
         name: &str,
         url: &str,
         method: &str,
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         if vp_task.as_ref().is_none() {
             vp_task.store(Vec::new());
         }
@@ -244,18 +221,18 @@ impl client {
             url: url.into(),
             headers: Vec::new(),
             body: Body::None,
-            client: self.inner.client.clone(),
+            client: self.client.clone(),
             vcl: true,
         });
 
         match ts
             .iter_mut()
-            .find(|e| e.req_name == name && e.client_name == self.inner.name)
+            .find(|e| e.req_name == name && e.client_name == self.name)
         {
             None => ts.push(Entry {
                 transaction: t,
                 req_name: name.to_owned(),
-                client_name: self.inner.name.to_owned(),
+                client_name: self.name.to_owned(),
             }),
             Some(e) => e.transaction = t,
         }
@@ -289,14 +266,14 @@ impl client {
         &self,
         vp_task: &'a mut VPriv<Vec<Entry>>,
         name: &'b str,
-    ) -> Result<&'a mut VclTransaction, String> {
+    ) -> Result<&'a mut VclTransaction> {
         vp_task
             .as_mut()
-            .ok_or(init_err!(name))?
+            .ok_or_else(|| init_err!(name))?
             .iter_mut()
-            .find(|e| name == e.req_name && self.inner.name == e.client_name)
+            .find(|e| name == e.req_name && self.name == e.client_name)
             .map(|e| &mut e.transaction)
-            .ok_or(init_err!(name))
+            .ok_or_else(|| init_err!(name))
     }
 
     fn get_resp<'a, 'b>(
@@ -304,7 +281,7 @@ impl client {
         vp_vcl: &mut VPriv<BgThread>,
         vp_task: &'a mut VPriv<Vec<Entry>>,
         name: &'b str,
-    ) -> Result<Result<&'a mut Response, String>, String> {
+    ) -> Result<Result<&'a Response>> {
         let t = self.get_transaction(vp_task, name)?;
         self.wait_on(vp_vcl.as_ref().unwrap(), t);
         Ok(t.unwrap_resp())
@@ -316,7 +293,7 @@ impl client {
         vp_vcl: &mut VPriv<BgThread>,
         vp_task: &mut VPriv<Vec<Entry>>,
         name: &str,
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         let t = self.get_transaction(vp_task, name)?;
 
         if matches!(t, VclTransaction::Req(_)) {
@@ -334,7 +311,7 @@ impl client {
         name: &str,
         key: &str,
         value: &str,
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         if let VclTransaction::Req(req) = self.get_transaction(vp_task, name)? {
             req.headers.push((key.into(), value.into()));
             Ok(())
@@ -349,7 +326,7 @@ impl client {
         vp_task: &mut VPriv<Vec<Entry>>,
         name: &str,
         body: &str,
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         if let VclTransaction::Req(req) = self.get_transaction(vp_task, name)? {
             req.body = Body::Full(Vec::from(body));
             Ok(())
@@ -364,7 +341,7 @@ impl client {
         vp_vcl: &mut VPriv<BgThread>,
         vp_task: &mut VPriv<Vec<Entry>>,
         name: &str,
-    ) -> Result<i64, String> {
+    ) -> Result<i64> {
         Ok(self
             .get_resp(vp_vcl, vp_task, name)?
             .map(|r| r.status)
@@ -378,7 +355,7 @@ impl client {
         vp_task: &'a mut VPriv<Vec<Entry>>,
         name: &str,
         key: &str,
-    ) -> Result<Option<&'a [u8]>, String> {
+    ) -> Result<Option<&'a [u8]>> {
         Ok(self
             .get_resp(vp_vcl, vp_task, name)?
             .map(|r| r.headers.get(key).map(|h| h.as_ref()))
@@ -391,7 +368,7 @@ impl client {
         vp_vcl: &mut VPriv<BgThread>,
         vp_task: &'a mut VPriv<Vec<Entry>>,
         name: &str,
-    ) -> Result<&'a [u8], String> {
+    ) -> Result<&'a [u8]> {
         Ok(self
             .get_resp(vp_vcl, vp_task, name)?
             .map(|r| r.body.as_ref().unwrap().as_ref())
@@ -404,15 +381,15 @@ impl client {
         vp_vcl: &mut VPriv<BgThread>,
         vp_task: &mut VPriv<Vec<Entry>>,
         name: &str,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<Option<String>> {
         match self.get_resp(vp_vcl, vp_task, name)? {
-            Err(e) => Ok(Some(e)),
+            Err(e) => Ok(Some(e.to_string())),
             Ok(_) => Ok(None),
         }
     }
 
     pub fn backend(&self, _ctx: &Ctx) -> *const varnish_sys::director {
-        self.inner.be
+        self.be
     }
 }
 
@@ -420,7 +397,7 @@ impl client {
 enum RespMsg {
     Hdrs(Response),
     Chunk(Bytes),
-    Err(String),
+    Err(Error),
 }
 
 #[derive(Debug)]
@@ -428,14 +405,6 @@ pub struct Entry {
     client_name: String,
     req_name: String,
     transaction: VclTransaction,
-}
-
-#[derive(Debug)]
-enum VclTransaction {
-    Transition,
-    Req(Request),
-    Sent(Receiver<RespMsg>),
-    Resp(Result<Response, String>),
 }
 
 // try to keep the object on stack as small as possible, we'll flesh it out into a reqwest::Request
@@ -466,11 +435,19 @@ enum Body {
     Stream(hyper::Body),
 }
 
+#[derive(Debug)]
+enum VclTransaction {
+    Transition,
+    Req(Request),
+    Sent(Receiver<RespMsg>),
+    Resp(Result<Response>),
+}
+
 impl VclTransaction {
-    fn unwrap_resp(&mut self) -> Result<&mut Response, String> {
+    fn unwrap_resp(&self) -> Result<&Response> {
         match self {
-            VclTransaction::Resp(Ok(ref mut rsp)) => Ok(rsp),
-            VclTransaction::Resp(Err(e)) => Err(e.to_string()),
+            VclTransaction::Resp(Ok(rsp)) => Ok(rsp),
+            VclTransaction::Resp(Err(e)) => Err(anyhow!(e.to_string())),
             _ => panic!("wrong VclTransaction type"),
         }
     }
@@ -499,7 +476,7 @@ async fn process_req(req: Request, tx: Sender<RespMsg>) {
     let method = match reqwest::Method::from_bytes(req.method.as_bytes()) {
         Ok(m) => m,
         Err(e) => {
-            tx.send(RespMsg::Err(e.to_string())).await.unwrap();
+            tx.send(RespMsg::Err(e.into())).await.unwrap();
             return;
         }
     };
@@ -514,7 +491,7 @@ async fn process_req(req: Request, tx: Sender<RespMsg>) {
     }
     let mut resp = match rreq.send().await {
         Err(e) => {
-            tx.send(RespMsg::Err(e.to_string())).await.unwrap();
+            tx.send(RespMsg::Err(e.into())).await.unwrap();
             return;
         }
         Ok(resp) => resp,
@@ -528,7 +505,7 @@ async fn process_req(req: Request, tx: Sender<RespMsg>) {
     if req.vcl {
         beresp.body = match resp.bytes().await {
             Err(e) => {
-                tx.send(RespMsg::Err(e.to_string())).await.unwrap();
+                tx.send(RespMsg::Err(e.into())).await.unwrap();
                 return;
             }
             Ok(b) => Some(b),
@@ -546,7 +523,7 @@ async fn process_req(req: Request, tx: Sender<RespMsg>) {
                     }
                 }
                 Err(e) => {
-                    let _ = tx.send(RespMsg::Err(e.to_string())).await.unwrap();
+                    let _ = tx.send(RespMsg::Err(e.into())).await.unwrap();
                     return;
                 }
             };
@@ -638,18 +615,14 @@ unsafe extern "C" fn be_gethdrs(
     be: varnish_sys::VCL_BACKEND,
 ) -> ::std::os::raw::c_int {
     let VCLBackend {
-        bgt: bgtp,
-        client: client {
-            inner: inner_client,
-        },
-        ..
+        bgt: bgtp, client, ..
     } = ((*be).priv_ as *const VCLBackend).as_ref().unwrap();
     let mut ctx = Ctx::new(ctxp as *mut varnish_sys::vrt_ctx);
 
     if be_healthy(ctxp, be, ptr::null_mut()) != 1 {
         ctx.log(
             varnish::vcl::ctx::LogTag::FetchError,
-            &format!("backend {}: unhealthy", &inner_client.name),
+            &format!("backend {}: unhealthy", &client.name),
         );
         return -1;
     }
@@ -659,7 +632,7 @@ unsafe extern "C" fn be_gethdrs(
 
     let bereq_url = bereq.url().unwrap();
 
-    let url = if let Some(base_url) = &inner_client.base_url {
+    let url = if let Some(base_url) = &client.base_url {
         // if the client has a base_url, prepend it to bereq.url
         format!("{}{}", base_url, bereq_url)
     } else if bereq_url.starts_with('/') {
@@ -667,7 +640,7 @@ unsafe extern "C" fn be_gethdrs(
         if let Some(host) = bereq.header("host") {
             format!(
                 "{}://{}{}",
-                if inner_client.https { "https" } else { "http" },
+                if client.https { "https" } else { "http" },
                 host,
                 bereq_url
             )
@@ -684,7 +657,7 @@ unsafe extern "C" fn be_gethdrs(
     let req = Request {
         method: bereq.method().unwrap().to_string(),
         url,
-        client: inner_client.client.clone(),
+        client: client.client.clone(),
         body: Body::Stream(body),
         vcl: false,
         headers: bereq
@@ -762,11 +735,33 @@ unsafe extern "C" fn be_gethdrs(
     }
 }
 
+fn good_probes(bitmap: u64, window: u32) -> u32 {
+    bitmap.wrapping_shl(64_u32 - window).count_ones()
+}
+
+fn is_healthy(bitmap: u64, window: u32, threshold: u32) -> bool {
+    good_probes(bitmap, window) >= threshold
+}
+
+fn update_health(
+    mut bitmap: u64,
+    threshold: u32,
+    window: u32,
+    probe_ok: bool,
+) -> (u64, bool, bool) {
+    let old_health = is_healthy(bitmap, window, threshold);
+    let new_bit = if probe_ok { 1 } else { 0 };
+    bitmap = bitmap.wrapping_shl(1) | new_bit;
+    let new_health = is_healthy(bitmap, window, threshold);
+    (bitmap, new_health, new_health == old_health)
+}
+
 unsafe extern "C" fn be_event(be: varnish_sys::VCL_BACKEND, e: varnish_sys::vcl_event_e) {
     let event = Event::new(e);
     let VCLBackend {
         probe_state,
         bgt: bgtp,
+        client,
         ..
     } = ((*be).priv_ as *mut VCLBackend).as_mut().unwrap();
 
@@ -782,44 +777,84 @@ unsafe extern "C" fn be_event(be: varnish_sys::VCL_BACKEND, e: varnish_sys::vcl_
     match event {
         // start the probing loop
         Event::Warm => {
-            probe_state.join_handle = Some(bgt.rt.spawn(async {
+            let name = client.name.clone();
+            let exp_status = probe_state.spec.exp_status;
+            let initial = probe_state.spec.initial;
+            let timeout = probe_state.spec.timeout;
+            let url = probe_state.url.clone();
+            let window = probe_state.spec.window;
+            let threshold = probe_state.spec.threshold;
+            let interval = probe_state.spec.interval;
+            let history = &probe_state.history;
+            let avg = &probe_state.avg;
+            probe_state.join_handle = Some(bgt.rt.spawn(async move {
                 let mut h = 0_u64;
-                for i in 0..std::cmp::min(probe_state.spec.initial, 64) {
+                for i in 0..std::cmp::min(initial, 64) {
                     h |= 1 << i;
                 }
-                let mut i = 1;
+                history.store(h, Ordering::Relaxed);
+                let mut avg_rate = 0_f64;
                 loop {
-                    println!(
-                        "--------------------------------------------- sending {i} {:?}",
-                        probe_state.spec.timeout
-                    );
-                    i += 1;
+                    let msg;
+                    let mut time = 0_f64;
                     let new_bit = match reqwest::ClientBuilder::new()
-                        .timeout(probe_state.spec.timeout)
+                        .timeout(timeout)
                         .build()
-                        .unwrap()
-                        .get(probe_state.url.clone())
-                        .send()
-                        .await
-                        .map(|r| r.status().as_u16())
+                        .map(|req| req.get(url.clone()).send())
                     {
                         Err(e) => {
-                            println!("{:?}", e);
-                            0
+                            msg = e.to_string();
+                            false
                         }
-                        Ok(status) if status as u32 == probe_state.spec.exp_status => 1,
-                        Ok(status) => {
-                            println!(
-                                "wrong status, expected {}, got {}",
-                                probe_state.spec.exp_status, status
-                            );
-                            0
+                        Ok(resp) => {
+                            let start = Instant::now();
+                            match resp.await {
+                                Err(e) => {
+                                    msg = format!("Error: {}", e);
+                                    false
+                                }
+                                Ok(resp) if resp.status().as_u16() as u32 == exp_status => {
+                                    msg = format!("Success: {}", resp.status().as_u16());
+                                    if avg_rate < 4.0 {
+                                        avg_rate += 1.0;
+                                    }
+                                    time = start.elapsed().as_secs_f64();
+                                    let mut _avg = avg.lock().unwrap();
+                                    *_avg += (time - *_avg) / avg_rate;
+                                    true
+                                }
+                                Ok(resp) => {
+                                    msg = format!(
+                                        "Error: expected {} status, got {}",
+                                        exp_status,
+                                        resp.status().as_u16()
+                                    );
+                                    false
+                                }
+                            }
                         }
                     };
-                    println!("--------------------------------------------- received {new_bit}");
-                    h = h.wrapping_shl(1) | new_bit;
-                    probe_state.history.store(h, Ordering::Relaxed);
-                    tokio::time::sleep(probe_state.spec.interval).await;
+                    let bitmap = history.load(Ordering::Relaxed);
+                    let (bitmap, healthy, changed) =
+                        update_health(bitmap, threshold, window, new_bit);
+                    log(
+                        LogTag::BackendHealth,
+                        &format!(
+                            "{} {} {} {} {} {} {} {} {} {}",
+                            name,
+                            if changed { "Went" } else { "Still" },
+                            if healthy { "healthy" } else { "sick" },
+                            "UNIMPLEMENTED",
+                            good_probes(bitmap, window),
+                            threshold,
+                            window,
+                            time,
+                            *avg.lock().unwrap(),
+                            msg
+                        ),
+                    );
+                    history.store(bitmap, Ordering::Relaxed);
+                    tokio::time::sleep(interval).await;
                 }
             }));
         }
@@ -852,16 +887,11 @@ unsafe extern "C" fn be_healthy(
 
     assert!(probe_state.spec.window <= 64);
 
-    let h = probe_state.history.load(Ordering::Relaxed);
-    println!(
-        "--------------------------------------------- checking {:b}",
-        h
-    );
-    if (h.wrapping_shl(64_u32 - probe_state.spec.window)).count_ones() < probe_state.spec.threshold
-    {
-        0
-    } else {
+    let bitmap = probe_state.history.load(Ordering::Relaxed);
+    if is_healthy(bitmap, probe_state.spec.window, probe_state.spec.threshold) {
         1
+    } else {
+        0
     }
 }
 
@@ -869,11 +899,82 @@ unsafe extern "C" fn be_finish(ctx: *const varnish_sys::vrt_ctx, _arg1: varnish_
     (*(*ctx).bo).htc = ptr::null_mut();
 }
 
-pub(crate) unsafe fn event(
-    _ctx: &Ctx,
-    vp: &mut VPriv<BgThread>,
-    event: Event,
-) -> Result<(), &'static str> {
+unsafe extern "C" fn be_list(
+    _ctxp: *const varnish_sys::vrt_ctx,
+    be: varnish_sys::VCL_BACKEND,
+    vsbp: *mut varnish_sys::vsb,
+    pflag: ::std::os::raw::c_int,
+    jflag: ::std::os::raw::c_int,
+) {
+    let mut vsb = Vsb::new(vsbp);
+    let VCLBackend { probe_state, .. } = ((*be).priv_ as *const VCLBackend).as_ref().unwrap();
+
+    let ProbeState {
+        history,
+        avg,
+        spec: Probe {
+            window, threshold, ..
+        },
+        ..
+    } = probe_state.as_ref().unwrap();
+    let bitmap = history.load(Ordering::Relaxed);
+    let window = *window;
+    let threshold = *threshold;
+    let health_str = if is_healthy(bitmap, window, threshold) {
+        "healthy"
+    } else {
+        "sick"
+    };
+    let msg = match (jflag, pflag) {
+        // json, no details
+        (1, 0) => {
+            format!(
+                "[{}, {}, \"{}\"]",
+                good_probes(bitmap, window).count_ones(),
+                window,
+                health_str
+            )
+        }
+        // json, details
+        (1, 1) => {
+            // TODO: talk to upstream, we shouldn't have to add the colon
+            serde_json::to_string(&probe_state.as_ref().unwrap().spec)
+                .as_ref()
+                .unwrap()
+                .to_owned()
+                + ",\n"
+        }
+        // no json, no details
+        (0, 0) => {
+            format!("{}/{}\t{}", good_probes(bitmap, window), window, health_str)
+        }
+        // no json, details
+        (0, 1) => {
+            let mut s = format!(
+                "
+ Current states  good: {:2} threshold: {:2} window: {:2}
+  Average response time of good probes: {:.06}
+  Oldest ================================================== Newest
+  ",
+                good_probes(bitmap, window),
+                threshold,
+                window,
+                avg.lock().unwrap()
+            );
+            for i in 0..64 {
+                s += if bitmap.wrapping_shr(63 - i) & 1 == 1 {
+                    "H"
+                } else {
+                    "-"
+                };
+            }
+            s
+        }
+        (_, _) => unreachable!(),
+    };
+    vsb.cat(&msg).unwrap();
+}
+pub(crate) unsafe fn event(_ctx: &Ctx, vp: &mut VPriv<BgThread>, event: Event) -> Result<()> {
     // we only need to worry about Load, BgThread will be destroyed with the VPriv when the VCL is
     // discarded
     if let Event::Load = event {

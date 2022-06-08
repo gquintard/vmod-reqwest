@@ -16,7 +16,8 @@ $Object client(PRIV_VCL,
 	BOOL accept_invalid_certs = 0,
 	BOOL accept_invalid_hostnames = 0,
 	[STRING http_proxy],
-	[STRING https_proxy]
+	[STRING https_proxy],
+	PROBE probe = 0
 	)
 
 Create a `client` object that can be used both for backend requests and in-vcl requests and will pool connections across them all. All arguments are optional.
