@@ -6,6 +6,8 @@ It offers dynamic backend (no more reloading the VCL because of DNS changes) and
 
 As usual, the full VCL API is described in [vmod.vcc](vmod.vcc).
 
+Don't hesitate to open github issues if somehting is unclear or impractical. You can also join us on [discord](https://discord.com/invite/EuwdvbZR6d).
+
 ## Version matching
 
 | vmod-reqwest | varnish |
