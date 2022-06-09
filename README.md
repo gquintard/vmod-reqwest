@@ -45,7 +45,7 @@ sub vcl_init {
 }
 
 sub vcl_recv {
-	# send a request into the void and don't worry if it complete or not
+	# send a request into the void and don't worry if it completes or not
 	client.init("async", "https://api.example.com/log", "POST")
 	client.set_body("URL = " + req.url);
 	client.send();
