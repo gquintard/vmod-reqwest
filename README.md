@@ -21,7 +21,7 @@ As usual, the full VCL API is described in [vmod.vcc](vmod.vcc).
 import reqwest;
 
 sub vcl_init {
-	new client = reqwest.client(base_url = "https://www.example.com/sub/directory", follow = 5);
+	new client = reqwest.client();
 }
 
 sub vcl_recv {
@@ -41,7 +41,7 @@ sub vcl_recv {
 import reqwest;
 
 sub vcl_init {
-	new client = reqwest.client(base_url = "https://www.example.com/sub/directory", follow = 5);
+	new client = reqwest.client();
 }
 
 sub vcl_recv {
