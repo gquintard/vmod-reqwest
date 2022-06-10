@@ -6,6 +6,13 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build and push
         uses: docker/build-push-action@v3
         with:
@@ -13,4 +20,4 @@ jobs:
           push: true
           registry: ghcr.io
           tags: thomersch/vmod_reqwest:0.0.3
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
