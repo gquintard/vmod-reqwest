@@ -18,5 +18,4 @@ jobs:
         with:
           context: docker
           push: true
-          tags: thomersch/vmod_reqwest:0.0.3
-
+          tags: ghcr.io/thomersch/vmod_reqwest:0.0.3
