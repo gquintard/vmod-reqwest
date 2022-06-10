@@ -11,4 +11,6 @@ jobs:
         with:
           context: docker
           push: true
+          registry: ghcr.io
           tags: thomersch/vmod_reqwest:0.0.3
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
