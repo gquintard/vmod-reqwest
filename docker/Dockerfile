@@ -7,4 +7,4 @@ ARG github_release_url=/refs/tags/v${vmod_reqwest_version}.zip
 
 RUN curl -s https://packagecloud.io/install/repositories/varnishcache/varnish71/script.deb.sh | bash && apt-get update && apt-get install -y varnish-dev clang libssl-dev
 
-RUN wget https://github.com/gquintard/vmod_reqwest/archive${github_release_url} && unzip v${vmod_reqwest_version}.zip && cd vmod_reqwest-${vmod_reqwest_version} && cargo build --release
+RUN wget https://github.com/gquintard/vmod_reqwest/archive${github_release_url} && unzip v${vmod_reqwest_version}.zip && cd vmod_reqwest-${vmod_reqwest_version} && cargo build --release && mv target/release/libvmod_reqwest.so /vmod_reqwest/libvmod_reqwest.so
