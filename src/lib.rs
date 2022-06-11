@@ -7,9 +7,9 @@ use std::io::Write;
 use std::os::raw::{c_uint, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedSender};
-use varnish::vcl::ctx::{Ctx, Event, LogTag};
+use varnish::vcl::ctx::{log, Ctx, Event, LogTag};
 use varnish::vcl::probe;
 use varnish::vcl::probe::Probe;
 use varnish::vcl::processor::{PullResult, VFPCtx, VFP};
@@ -198,15 +198,13 @@ impl client {
         };
 
         let probe_state = match probe {
-            Some(spec) => {
-                match build_probe_state(spec, client.inner.base_url.as_deref()) {
-                    Ok(probe_state) => Some(probe_state),
-                    Err(e) => {
-                        ctx.fail(&e.to_string());
-                        None
-                    }
+            Some(spec) => match build_probe_state(spec, client.inner.base_url.as_deref()) {
+                Ok(probe_state) => Some(probe_state),
+                Err(e) => {
+                    ctx.fail(&e.to_string());
+                    None
                 }
-            }
+            },
             None => None,
         };
         let backend_p = Box::into_raw(Box::new(VCLBackend {
@@ -762,11 +760,29 @@ unsafe extern "C" fn be_gethdrs(
     }
 }
 
+fn is_healthy(bitmap: u64, window: u32, threshold: u32) -> bool {
+    bitmap.wrapping_shl(64_u32 - window).count_ones() >= threshold
+}
+
+fn update_health(
+    mut bitmap: u64,
+    threshold: u32,
+    window: u32,
+    probe_ok: bool,
+) -> (u64, bool, bool) {
+    let old_health = is_healthy(bitmap, window, threshold);
+    let new_bit = if probe_ok { 1 } else { 0 };
+    bitmap = bitmap.wrapping_shl(1) | new_bit;
+    let new_health = is_healthy(bitmap, window, threshold);
+    (bitmap, new_health, new_health == old_health)
+}
+
 unsafe extern "C" fn be_event(be: varnish_sys::VCL_BACKEND, e: varnish_sys::vcl_event_e) {
     let event = Event::new(e);
     let VCLBackend {
         probe_state,
         bgt: bgtp,
+        client,
         ..
     } = ((*be).priv_ as *mut VCLBackend).as_mut().unwrap();
 
@@ -782,44 +798,83 @@ unsafe extern "C" fn be_event(be: varnish_sys::VCL_BACKEND, e: varnish_sys::vcl_
     match event {
         // start the probing loop
         Event::Warm => {
-            probe_state.join_handle = Some(bgt.rt.spawn(async {
+            let name = client.inner.name.clone();
+            let exp_status = probe_state.spec.exp_status;
+            let initial = probe_state.spec.initial;
+            let timeout = probe_state.spec.timeout;
+            let url = probe_state.url.clone();
+            let window = probe_state.spec.window;
+            let threshold = probe_state.spec.threshold;
+            let interval = probe_state.spec.interval;
+            let history = &probe_state.history;
+            probe_state.join_handle = Some(bgt.rt.spawn(async move {
                 let mut h = 0_u64;
-                for i in 0..std::cmp::min(probe_state.spec.initial, 64) {
+                for i in 0..std::cmp::min(initial, 64) {
                     h |= 1 << i;
                 }
-                let mut i = 1;
+                history.store(h, Ordering::Relaxed);
+                let mut avg_rate = 0_f64;
+                let mut avg = 0_f64;
                 loop {
-                    println!(
-                        "--------------------------------------------- sending {i} {:?}",
-                        probe_state.spec.timeout
-                    );
-                    i += 1;
+                    let msg;
+                    let mut time = 0_f64;
                     let new_bit = match reqwest::ClientBuilder::new()
-                        .timeout(probe_state.spec.timeout)
+                        .timeout(timeout)
                         .build()
-                        .unwrap()
-                        .get(probe_state.url.clone())
-                        .send()
-                        .await
-                        .map(|r| r.status().as_u16())
+                        .map(|req| req.get(url.clone()).send())
                     {
                         Err(e) => {
-                            println!("{:?}", e);
-                            0
+                            msg = e.to_string();
+                            false
                         }
-                        Ok(status) if status as u32 == probe_state.spec.exp_status => 1,
-                        Ok(status) => {
-                            println!(
-                                "wrong status, expected {}, got {}",
-                                probe_state.spec.exp_status, status
-                            );
-                            0
+                        Ok(resp) => {
+                            let start = Instant::now();
+                            match resp.await {
+                                Err(e) => {
+                                    msg = format!("Error: {}", e);
+                                    false
+                                }
+                                Ok(resp) if resp.status().as_u16() as u32 == exp_status => {
+                                    msg = format!("Success: {}", resp.status().as_u16());
+                                    if avg_rate < 4.0 {
+                                        avg_rate += 1.0;
+                                    }
+                                    time = start.elapsed().as_secs_f64();
+                                    avg = (time - avg) / avg_rate;
+                                    true
+                                }
+                                Ok(resp) => {
+                                    msg = format!(
+                                        "Error: expected {} status, got {}",
+                                        exp_status,
+                                        resp.status().as_u16()
+                                    );
+                                    false
+                                }
+                            }
                         }
                     };
-                    println!("--------------------------------------------- received {new_bit}");
-                    h = h.wrapping_shl(1) | new_bit;
-                    probe_state.history.store(h, Ordering::Relaxed);
-                    tokio::time::sleep(probe_state.spec.interval).await;
+                    let bitmap = history.load(Ordering::Relaxed);
+                    let (bitmap, healthy, changed) =
+                        update_health(bitmap, threshold, window, new_bit);
+                    log(
+                        LogTag::BackendHealth,
+                        &format!(
+                            "{} {} {} {} {} {} {} {} {} {}",
+                            name,
+                            if changed { "Went" } else { "Still" },
+                            if healthy { "healthy" } else { "sick" },
+                            "UNIMPLEMENTED",
+                            bitmap.wrapping_shl(window).count_ones(),
+                            threshold,
+                            window,
+                            time,
+                            avg,
+                            msg
+                        ),
+                    );
+                    history.store(bitmap, Ordering::Relaxed);
+                    tokio::time::sleep(interval).await;
                 }
             }));
         }
@@ -852,16 +907,11 @@ unsafe extern "C" fn be_healthy(
 
     assert!(probe_state.spec.window <= 64);
 
-    let h = probe_state.history.load(Ordering::Relaxed);
-    println!(
-        "--------------------------------------------- checking {:b}",
-        h
-    );
-    if (h.wrapping_shl(64_u32 - probe_state.spec.window)).count_ones() < probe_state.spec.threshold
-    {
-        0
-    } else {
+    let bitmap = probe_state.history.load(Ordering::Relaxed);
+    if is_healthy(bitmap, probe_state.spec.window, probe_state.spec.threshold) {
         1
+    } else {
+        0
     }
 }
 
