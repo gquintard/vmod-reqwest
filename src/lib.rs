@@ -1,6 +1,6 @@
 varnish::boilerplate!();
 
-use anyhow::{Error, Result};
+use anyhow::{anyhow, bail, Error, Result};
 use bytes::Bytes;
 use std::boxed::Box;
 use std::io::Write;
@@ -26,7 +26,7 @@ varnish::vtc!(test08);
 
 macro_rules! init_err {
     ($n:ident) => {
-        format!("reqwest: request \"{}\" isn't initialized", $n)
+        anyhow!("reqwest: request \"{}\" isn't initialized", $n)
     };
 }
 
@@ -100,14 +100,14 @@ fn build_probe_state<'a>(mut probe: Probe<'a>, base_url: Option<&str>) -> Result
 
     let spec_url = match probe.request {
         probe::Request::URL(ref u) => u,
-        _ => return Err(Error::msg("can't use a probe without .url")),
+        _ => bail!("can't use a probe without .url"),
     };
     let url = if let Some(base_url) = base_url {
         reqwest::Url::parse(&format!("{}{}", base_url, spec_url))?
     } else if spec_url.starts_with('/') {
-        return Err(Error::msg(
+        bail!(
             "client has no .base_url, and the probe doesn't have a fully-qualified URL as ",
-        ));
+        );
     } else {
         reqwest::Url::parse(spec_url)?
     };
@@ -139,7 +139,7 @@ impl client {
         http_proxy: Option<&str>,
         https_proxy: Option<&str>,
         probe: Option<Probe>,
-    ) -> Self {
+    ) -> Result<Self> {
         let mut rcb = reqwest::ClientBuilder::new()
             .brotli(auto_brotli)
             .deflate(auto_deflate)
@@ -153,39 +153,20 @@ impl client {
             rcb = rcb.connect_timeout(t);
         }
         if let Some(proxy) = http_proxy {
-            match reqwest::Proxy::http(proxy) {
-                Ok(p) => {
-                    rcb = rcb.proxy(p);
-                }
-                Err(e) => {
-                    ctx.fail(&e.to_string());
-                }
-            }
+            rcb = rcb.proxy(reqwest::Proxy::http(proxy)?);
         }
         if let Some(proxy) = https_proxy {
-            match reqwest::Proxy::http(proxy) {
-                Ok(p) => {
-                    rcb = rcb.proxy(p);
-                }
-                Err(e) => {
-                    ctx.fail(&e.to_string());
-                }
-            }
+            rcb = rcb.proxy(reqwest::Proxy::http(proxy)?);
         }
         if follow <= 0 {
             rcb = rcb.redirect(reqwest::redirect::Policy::none());
         } else {
             rcb = rcb.redirect(reqwest::redirect::Policy::limited(follow as usize));
         }
-        let reqwest_client = match rcb.build() {
-            Ok(rc) => rc,
-            Err(e) => {
-                ctx.fail(&e.to_string());
-                reqwest::Client::new()
-            }
-        };
+        let reqwest_client = rcb.build()?;
+
         if https.is_some() && base_url.is_some() {
-            ctx.fail("reqwest: client() can't take both an https and a base_url argument");
+            bail!("reqwest: client() can't take both an https and a base_url argument");
         }
         let mut client = client {
             inner: Box::new(InnerClient {
@@ -198,13 +179,7 @@ impl client {
         };
 
         let probe_state = match probe {
-            Some(spec) => match build_probe_state(spec, client.inner.base_url.as_deref()) {
-                Ok(probe_state) => Some(probe_state),
-                Err(e) => {
-                    ctx.fail(&e.to_string());
-                    None
-                }
-            },
+            Some(spec) => Some(build_probe_state(spec, client.inner.base_url.as_deref())?),
             None => None,
         };
         let backend_p = Box::into_raw(Box::new(VCLBackend {
@@ -221,7 +196,7 @@ impl client {
             )
         };
         assert!(!client.inner.be.is_null());
-        client
+        Ok(client)
     }
 
     pub fn init(
@@ -231,7 +206,7 @@ impl client {
         name: &str,
         url: &str,
         method: &str,
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         if vp_task.as_ref().is_none() {
             vp_task.store(Vec::new());
         }
@@ -287,7 +262,7 @@ impl client {
         &self,
         vp_task: &'a mut VPriv<Vec<Entry>>,
         name: &'b str,
-    ) -> Result<&'a mut VclTransaction, String> {
+    ) -> Result<&'a mut VclTransaction> {
         vp_task
             .as_mut()
             .ok_or(init_err!(name))?
@@ -302,7 +277,7 @@ impl client {
         vp_vcl: &mut VPriv<BgThread>,
         vp_task: &'a mut VPriv<Vec<Entry>>,
         name: &'b str,
-    ) -> Result<Result<&'a mut Response, String>, String> {
+    ) -> Result<Result<&'a Response>> {
         let t = self.get_transaction(vp_task, name)?;
         self.wait_on(vp_vcl.as_ref().unwrap(), t);
         Ok(t.unwrap_resp())
@@ -314,7 +289,7 @@ impl client {
         vp_vcl: &mut VPriv<BgThread>,
         vp_task: &mut VPriv<Vec<Entry>>,
         name: &str,
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         let t = self.get_transaction(vp_task, name)?;
 
         if matches!(t, VclTransaction::Req(_)) {
@@ -332,7 +307,7 @@ impl client {
         name: &str,
         key: &str,
         value: &str,
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         if let VclTransaction::Req(req) = self.get_transaction(vp_task, name)? {
             req.headers.push((key.into(), value.into()));
             Ok(())
@@ -347,7 +322,7 @@ impl client {
         vp_task: &mut VPriv<Vec<Entry>>,
         name: &str,
         body: &str,
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         if let VclTransaction::Req(req) = self.get_transaction(vp_task, name)? {
             req.body = Body::Full(Vec::from(body));
             Ok(())
@@ -362,7 +337,7 @@ impl client {
         vp_vcl: &mut VPriv<BgThread>,
         vp_task: &mut VPriv<Vec<Entry>>,
         name: &str,
-    ) -> Result<i64, String> {
+    ) -> Result<i64> {
         Ok(self
             .get_resp(vp_vcl, vp_task, name)?
             .map(|r| r.status)
@@ -376,7 +351,7 @@ impl client {
         vp_task: &'a mut VPriv<Vec<Entry>>,
         name: &str,
         key: &str,
-    ) -> Result<Option<&'a [u8]>, String> {
+    ) -> Result<Option<&'a [u8]>> {
         Ok(self
             .get_resp(vp_vcl, vp_task, name)?
             .map(|r| r.headers.get(key).map(|h| h.as_ref()))
@@ -389,7 +364,7 @@ impl client {
         vp_vcl: &mut VPriv<BgThread>,
         vp_task: &'a mut VPriv<Vec<Entry>>,
         name: &str,
-    ) -> Result<&'a [u8], String> {
+    ) -> Result<&'a [u8]> {
         Ok(self
             .get_resp(vp_vcl, vp_task, name)?
             .map(|r| r.body.as_ref().unwrap().as_ref())
@@ -402,9 +377,9 @@ impl client {
         vp_vcl: &mut VPriv<BgThread>,
         vp_task: &mut VPriv<Vec<Entry>>,
         name: &str,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<Option<String>> {
         match self.get_resp(vp_vcl, vp_task, name)? {
-            Err(e) => Ok(Some(e)),
+            Err(e) => Ok(Some(e.to_string())),
             Ok(_) => Ok(None),
         }
     }
@@ -418,7 +393,7 @@ impl client {
 enum RespMsg {
     Hdrs(Response),
     Chunk(Bytes),
-    Err(String),
+    Err(Error),
 }
 
 #[derive(Debug)]
@@ -426,14 +401,6 @@ pub struct Entry {
     client_name: String,
     req_name: String,
     transaction: VclTransaction,
-}
-
-#[derive(Debug)]
-enum VclTransaction {
-    Transition,
-    Req(Request),
-    Sent(Receiver<RespMsg>),
-    Resp(Result<Response, String>),
 }
 
 // try to keep the object on stack as small as possible, we'll flesh it out into a reqwest::Request
@@ -464,11 +431,19 @@ enum Body {
     Stream(hyper::Body),
 }
 
+#[derive(Debug)]
+enum VclTransaction {
+    Transition,
+    Req(Request),
+    Sent(Receiver<RespMsg>),
+    Resp(Result<Response>),
+}
+
 impl VclTransaction {
-    fn unwrap_resp(&mut self) -> Result<&mut Response, String> {
+    fn unwrap_resp(&self) -> Result<&Response> {
         match self {
-            VclTransaction::Resp(Ok(ref mut rsp)) => Ok(rsp),
-            VclTransaction::Resp(Err(e)) => Err(e.to_string()),
+            VclTransaction::Resp(Ok(rsp)) => Ok(rsp),
+            VclTransaction::Resp(Err(e)) => Err(anyhow!(e.to_string())),
             _ => panic!("wrong VclTransaction type"),
         }
     }
@@ -497,7 +472,7 @@ async fn process_req(req: Request, tx: Sender<RespMsg>) {
     let method = match reqwest::Method::from_bytes(req.method.as_bytes()) {
         Ok(m) => m,
         Err(e) => {
-            tx.send(RespMsg::Err(e.to_string())).await.unwrap();
+            tx.send(RespMsg::Err(e.into())).await.unwrap();
             return;
         }
     };
@@ -512,7 +487,7 @@ async fn process_req(req: Request, tx: Sender<RespMsg>) {
     }
     let mut resp = match rreq.send().await {
         Err(e) => {
-            tx.send(RespMsg::Err(e.to_string())).await.unwrap();
+            tx.send(RespMsg::Err(e.into())).await.unwrap();
             return;
         }
         Ok(resp) => resp,
@@ -526,7 +501,7 @@ async fn process_req(req: Request, tx: Sender<RespMsg>) {
     if req.vcl {
         beresp.body = match resp.bytes().await {
             Err(e) => {
-                tx.send(RespMsg::Err(e.to_string())).await.unwrap();
+                tx.send(RespMsg::Err(e.into())).await.unwrap();
                 return;
             }
             Ok(b) => Some(b),
@@ -544,7 +519,7 @@ async fn process_req(req: Request, tx: Sender<RespMsg>) {
                     }
                 }
                 Err(e) => {
-                    let _ = tx.send(RespMsg::Err(e.to_string())).await.unwrap();
+                    let _ = tx.send(RespMsg::Err(e.into())).await.unwrap();
                     return;
                 }
             };
@@ -923,7 +898,7 @@ pub(crate) unsafe fn event(
     _ctx: &Ctx,
     vp: &mut VPriv<BgThread>,
     event: Event,
-) -> Result<(), &'static str> {
+) -> Result<()> {
     // we only need to worry about Load, BgThread will be destroyed with the VPriv when the VCL is
     // discarded
     if let Event::Load = event {
