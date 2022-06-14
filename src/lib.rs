@@ -30,16 +30,9 @@ macro_rules! init_err {
     };
 }
 
-// we add a layer of indirection so we can get a pointer to the inner struct as we are building the
-// larger one (to give to VRT_AddDirector)
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone)]
 struct client {
-    inner: Box<InnerClient>,
-}
-
-#[derive(Debug, Clone)]
-struct InnerClient {
     name: String,
     client: reqwest::Client,
     be: *const varnish_sys::director,
@@ -57,7 +50,7 @@ struct ProbeState<'a> {
 
 struct VCLBackend<'a> {
     bgt: *const BgThread,
-    client: client,
+    client: Box<client>,
     probe_state: Option<ProbeState<'a>>,
 }
 
@@ -168,18 +161,16 @@ impl client {
         if https.is_some() && base_url.is_some() {
             bail!("reqwest: client() can't take both an https and a base_url argument");
         }
-        let mut client = client {
-            inner: Box::new(InnerClient {
-                name: vcl_name.to_owned(),
-                client: reqwest_client,
-                https: https.unwrap_or(false),
-                be: std::ptr::null(),
-                base_url: base_url.map(|s| s.into()),
-            }),
-        };
+        let mut client = Box::new(client {
+            name: vcl_name.to_owned(),
+            client: reqwest_client,
+            https: https.unwrap_or(false),
+            be: std::ptr::null(),
+            base_url: base_url.map(|s| s.into()),
+        });
 
         let probe_state = match probe {
-            Some(spec) => Some(build_probe_state(spec, client.inner.base_url.as_deref())?),
+            Some(spec) => Some(build_probe_state(spec, client.base_url.as_deref())?),
             None => None,
         };
         let backend_p = Box::into_raw(Box::new(VCLBackend {
@@ -187,7 +178,7 @@ impl client {
             client: client.clone(),
             probe_state,
         })) as *mut VCLBackend;
-        client.inner.be = unsafe {
+        client.be = unsafe {
             varnish_sys::VRT_AddDirector(
                 ctx.raw,
                 METHODS,
@@ -195,8 +186,8 @@ impl client {
                 format!("reqwest_backend_{}\0", vcl_name).as_ptr() as *const i8,
             )
         };
-        assert!(!client.inner.be.is_null());
-        Ok(client)
+        assert!(!client.be.is_null());
+        Ok(*client)
     }
 
     pub fn init(
@@ -217,18 +208,18 @@ impl client {
             url: url.into(),
             headers: Vec::new(),
             body: Body::None,
-            client: self.inner.client.clone(),
+            client: self.client.clone(),
             vcl: true,
         });
 
         match ts
             .iter_mut()
-            .find(|e| e.req_name == name && e.client_name == self.inner.name)
+            .find(|e| e.req_name == name && e.client_name == self.name)
         {
             None => ts.push(Entry {
                 transaction: t,
                 req_name: name.to_owned(),
-                client_name: self.inner.name.to_owned(),
+                client_name: self.name.to_owned(),
             }),
             Some(e) => e.transaction = t,
         }
@@ -267,7 +258,7 @@ impl client {
             .as_mut()
             .ok_or(init_err!(name))?
             .iter_mut()
-            .find(|e| name == e.req_name && self.inner.name == e.client_name)
+            .find(|e| name == e.req_name && self.name == e.client_name)
             .map(|e| &mut e.transaction)
             .ok_or(init_err!(name))
     }
@@ -385,7 +376,7 @@ impl client {
     }
 
     pub fn backend(&self, _ctx: &Ctx) -> *const varnish_sys::director {
-        self.inner.be
+        self.be
     }
 }
 
@@ -612,9 +603,7 @@ unsafe extern "C" fn be_gethdrs(
 ) -> ::std::os::raw::c_int {
     let VCLBackend {
         bgt: bgtp,
-        client: client {
-            inner: inner_client,
-        },
+        client,
         ..
     } = ((*be).priv_ as *const VCLBackend).as_ref().unwrap();
     let mut ctx = Ctx::new(ctxp as *mut varnish_sys::vrt_ctx);
@@ -622,7 +611,7 @@ unsafe extern "C" fn be_gethdrs(
     if be_healthy(ctxp, be, ptr::null_mut()) != 1 {
         ctx.log(
             varnish::vcl::ctx::LogTag::FetchError,
-            &format!("backend {}: unhealthy", &inner_client.name),
+            &format!("backend {}: unhealthy", &client.name),
         );
         return -1;
     }
@@ -632,7 +621,7 @@ unsafe extern "C" fn be_gethdrs(
 
     let bereq_url = bereq.url().unwrap();
 
-    let url = if let Some(base_url) = &inner_client.base_url {
+    let url = if let Some(base_url) = &client.base_url {
         // if the client has a base_url, prepend it to bereq.url
         format!("{}{}", base_url, bereq_url)
     } else if bereq_url.starts_with('/') {
@@ -640,7 +629,7 @@ unsafe extern "C" fn be_gethdrs(
         if let Some(host) = bereq.header("host") {
             format!(
                 "{}://{}{}",
-                if inner_client.https { "https" } else { "http" },
+                if client.https { "https" } else { "http" },
                 host,
                 bereq_url
             )
@@ -657,7 +646,7 @@ unsafe extern "C" fn be_gethdrs(
     let req = Request {
         method: bereq.method().unwrap().to_string(),
         url,
-        client: inner_client.client.clone(),
+        client: client.client.clone(),
         body: Body::Stream(body),
         vcl: false,
         headers: bereq
@@ -773,7 +762,7 @@ unsafe extern "C" fn be_event(be: varnish_sys::VCL_BACKEND, e: varnish_sys::vcl_
     match event {
         // start the probing loop
         Event::Warm => {
-            let name = client.inner.name.clone();
+            let name = client.name.clone();
             let exp_status = probe_state.spec.exp_status;
             let initial = probe_state.spec.initial;
             let timeout = probe_state.spec.timeout;
