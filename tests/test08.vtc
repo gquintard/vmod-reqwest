@@ -1,0 +1,77 @@
+varnishtest "probe with base_url"
+
+server s1 {
+	rxreq
+	expect req.url == "/probe"
+	txresp
+	close
+	accept
+
+	rxreq
+	expect req.url == "/probe"
+	txresp
+	accept
+
+	rxreq
+	expect req.url == "/req"
+	txresp
+	accept
+
+	rxreq
+	expect req.url == "/probe"
+	txresp -status 404
+	accept
+
+	rxreq
+	expect req.url == "/probe"
+	txresp -status 404
+	accept
+
+	# should never be reached, but we want to send something
+	# if the backend is not marked as unhealthy
+	rxreq
+	expect req.url == "/req2"
+	txresp
+	accept
+} -start
+
+# VCL, no backend needed
+varnish v1 -arg "-p debug=+syncvsl" -vcl {
+	import reqwest from "${vmod}";
+
+	probe p1 {
+		.url = "/probe";
+		.window = 4;
+		.initial = 1;
+		.threshold = 3;
+		.interval = 1s;
+	}
+
+	backend s1 none;
+
+	sub vcl_init {
+		new client = reqwest.client(base_url = "http://${s1_addr}:${s1_port}", probe = p1);
+	}
+
+	sub vcl_recv {
+		set req.backend_hint = client.backend();
+	}
+} -start
+
+client c1 {
+	txreq -url "/req"
+	rxresp
+	expect resp.status == 503
+
+	delay 1.5
+
+	txreq -url "/req"
+	rxresp
+	expect resp.status == 200
+
+	delay 2
+
+	txreq -url "/req2"
+	rxresp
+	expect resp.status == 503
+} -run
