@@ -2,11 +2,23 @@
 
 This is a vmod for [varnish](http://varnish-cache.org/) to send and receive HTTP requests from VCL, leveraging the [reqwest crate](https://docs.rs/reqwest/latest/reqwest/).
 
-It offers dynamic backend (no more reloading the VCL because of DNS changes) and similar features to [vmod_curl](https://github.com/varnish/libvmod-curl), but notably offers fire-and-forget capabilities and parallel request handling.
+It can be used in two different ways:
+- to provide dynamic backends, similar to [vmod_dynamic](https://github.com/nigoroll/libvmod-dynamic) or [vmod_goto](https://docs.varnish-software.com/varnish-cache-plus/vmods/goto/)
+  - Backend addresses are resolved when needed, not just when the VCL is loaded
+  - support for backends with an address defined ahead of time, but also on-the-fly
+  - probing support
+- as a mean to issue HTTP requests from VCL to communicate with third-party servers, much like [vmod_curl](https://github.com/varnish/libvmod-curl)
+  - parallel requests
+  - synchronous and asynchronous requests support
+
+And in both cases:
+- HTTP2 and HTTPS support
+- HTTP redirection support (it will automatically follow 30X responses)
+- (optional) automatic `gzip` and `brotli` decompression
 
 As usual, the full VCL API is described in [vmod.vcc](vmod.vcc).
 
-Don't hesitate to open github issues if somehting is unclear or impractical. You can also join us on [discord](https://discord.com/invite/EuwdvbZR6d).
+Don't hesitate to open github issues if something is unclear or impractical. You can also join us on [discord](https://discord.com/invite/EuwdvbZR6d).
 
 ## Version matching
 
@@ -18,7 +30,7 @@ Don't hesitate to open github issues if somehting is unclear or impractical. You
 
 ## VCL Examples
 
-### Send request and use response headers
+### VCL: synchronous request and response headers
 ``` vcl
 import reqwest;
 
@@ -30,6 +42,34 @@ sub vcl_recv {
 	# use an HTTP request to grant (or not) access to the client
 	client.init("sync", "https://api.example.com/authorized/" + req.http.user);
 	if (client.status("sync") == 200) {
+		return (lookup);
+	} else {
+		return (synth(403));
+	}
+}
+```
+
+### VCL: multiple requests in-flight at once
+
+``` vcl
+import reqwest;
+
+sub vcl_init {
+	new client = reqwest.client();
+}
+
+sub vcl_recv {
+	# build and send a request to the legacy service
+	client.init("req1", "https://login.example.com/user/" + req.http.user);
+	client.send("req1");
+
+	# same for the new endpoint
+	client.init("req2", "https://loginv2.example.com/user/" + req.http.user);
+	client.send("req2");
+
+	# let the request through if at least one of the services
+	# responded favorably
+	if (client.status("req1") == 200 || client.status("req2") == 200) {
 		return (lookup);
 	} else {
 		return (synth(403));
@@ -49,8 +89,8 @@ sub vcl_init {
 sub vcl_recv {
 	# send a request into the void and don't worry if it completes or not
 	client.init("async", "https://api.example.com/log", "POST")
-	client.set_body("URL = " + req.url);
-	client.send();
+	client.set_body("async", "URL = " + req.url);
+	client.send("async");
 }
 ```
 
@@ -60,11 +100,13 @@ sub vcl_recv {
 import reqwest;
 
 sub vcl_init {
-	new client = reqwest.client(base_url = "https://www.example.com/sub/directory", follow = 5, auto_brotli = true);
+	# note that "/sub/directory" will be prefixed to `bereq.url`
+	# upon sending the request to the backend
+	new be = reqwest.client(base_url = "https://www.example.com/sub/directory", follow = 5, auto_brotli = true);
 }
 
 sub vcl_recv {
-	set req.backend_hint = client.backend();
+	set req.backend_hint = be.backend();
 }
 ```
 
