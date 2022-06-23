@@ -1,0 +1,65 @@
+varnishtest "probe with full .url"
+
+server s1 {
+	rxreq
+	expect req.url == "/url2"
+	txresp
+} -start
+
+server s2 {
+	rxreq
+	expect req.url == "/probe"
+	txresp
+	close
+	accept
+
+	rxreq
+	expect req.url == "/probe"
+	txresp
+	close
+	accept
+
+	rxreq
+	expect req.url == "/probe"
+	txresp
+	close
+	accept
+} -start
+
+# VCL, no backend needed
+varnish v1 -arg "-p debug=+syncvsl" -vcl {
+	import reqwest from "${vmod}";
+
+	# because .url is a full URL, p1 is tied to s2
+	probe p1 {
+		.url = "http://${s2_addr}:${s2_port}/probe";
+		.window = 4;
+		.initial = 2;
+		.threshold = 4;
+		.interval = 1s;
+	}
+
+	backend s1 none;
+
+	sub vcl_init {
+		new client = reqwest.client(probe = p1);
+	}
+
+	sub vcl_recv {
+		# this client will hit s1, but only if s2 is responding to probes
+		set req.backend_hint = client.backend();
+		set req.http.host = "${s1_addr}:${s1_port}";
+	}
+} -start
+
+client c1 {
+	txreq -url "/url1"
+	rxresp
+	expect resp.status == 503
+
+	delay 1.5
+
+	txreq -url "/url2"
+	rxresp
+	expect resp.status == 200
+} -run

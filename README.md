@@ -169,7 +169,7 @@ Then, follow distribution-specific instructions.
 ``` bash
 # create a work directory
 mkdir build
-# copy the tarball and PKGBUIL file, substituing the variables we care about
+# copy the tarball and PKGBUILD file, substituing the variables we care about
 cp vmod_reqwest-$VMOD_VERSION.tar.gz build
 sed -e "s/@VMOD_VERSION@/$VMOD_VERSION/" -e "s/@VARNISH_VERSION@/$VARNISH_VERSION/" pkg/arch/PKGBUILD > build/PKGBUILD
 

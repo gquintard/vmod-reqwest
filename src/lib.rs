@@ -26,6 +26,7 @@ varnish::vtc!(test06);
 varnish::vtc!(test07);
 varnish::vtc!(test08);
 varnish::vtc!(test09);
+varnish::vtc!(test10);
 
 macro_rules! init_err {
     ($n:ident) => {
@@ -109,7 +110,7 @@ fn build_probe_state<'a>(mut probe: Probe<'a>, base_url: Option<&str>) -> Result
     let url = if let Some(base_url) = base_url {
         reqwest::Url::parse(&format!("{}{}", base_url, spec_url))?
     } else if spec_url.starts_with('/') {
-        bail!("client has no .base_url, and the probe doesn't have a fully-qualified URL as ",);
+        bail!("client has no .base_url, and the probe doesn't have a fully-qualified URL as .url",);
     } else {
         reqwest::Url::parse(spec_url)?
     };
