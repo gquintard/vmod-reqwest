@@ -6,7 +6,8 @@ It can be used in two different ways:
 - to provide dynamic backends, similar to [vmod_dynamic](https://github.com/nigoroll/libvmod-dynamic) or [vmod_goto](https://docs.varnish-software.com/varnish-cache-plus/vmods/goto/)
   - Backend addresses are resolved when needed, not just when the VCL is loaded
   - support for backends with an address defined ahead of time, but also on-the-fly
-  - probing support
+  - probe support
+  - ability to index the health of a backend on a probe targeting another
 - as a mean to issue HTTP requests from VCL to communicate with third-party servers, much like [vmod_curl](https://github.com/varnish/libvmod-curl)
   - parallel requests
   - synchronous and asynchronous requests support
@@ -111,11 +112,37 @@ sub vcl_recv {
 }
 ```
 
+### Using a probe to one backend to determine another's health
+
+``` vcl
+import reqwest;
+
+# create a probe to a specific endpoint
+probe p1 {
+	.url = "http://probed.example.com/probe";
+	.window = 4;
+	.initial = 2;
+	.threshold = 4;
+	.interval = 1s;
+}
+
+# attach the probe to a client
+sub vcl_init {
+	new be = reqwest.client(probe = p1);
+}
+
+# set the backend, which will use req.url+req.http.host as a destination,
+# but only if probed.example.com is replying to probes
+sub vcl_recv {
+	set req.backend_hint = be.backend();
+}
+```
 
 ## Requirements
 
 You'll need:
 - `cargo` (and the accompanying `rust` package)
+- `clang`
 - `python3`
 - the `varnish` 7.0.1 development libraries/headers ([depends on the `varnish` crate you are using](https://github.com/gquintard/varnish-rs#versions))
 

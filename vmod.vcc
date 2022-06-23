@@ -17,7 +17,7 @@ $Object client(PRIV_VCL,
 	BOOL accept_invalid_hostnames = 0,
 	[STRING http_proxy],
 	[STRING https_proxy],
-	PROBE probe = 0
+	[PROBE probe]
 	)
 
 Create a `client` object that can be used both for backend requests and in-vcl requests and will pool connections across them all. All arguments are optional.
@@ -38,6 +38,14 @@ Create a `client` object that can be used both for backend requests and in-vcl r
 `accept_invalid_certs` will avoid erroring on invalid certificates, for example self-signed ones. It's a dangerous option, use at your own risk!
 
 `accept_invalid_hostnames` is even more dangerous and doesn't even require for the certificate hostname to match the server being contacted.
+
+`http_proxy`/`https_proxy` allow you to set an HTTP(S) proxy to send your requests through.
+
+`probe` will work the same way as for regular backends, but there are a few details to be aware of:
+- the health will only prevent a fetch for backends (i.e. when using `client.backend()`), not when creating free standing requests (`client.init()`/`client.send()`).
+- if the `client` has a `base_url`, the probe will prepend it to its `.url` field to know which URL to probe.
+- otherwise, it'll just use the `.url` field as-is (but will immediately error out if `.url` starts with a `/`).
+- this means `client`s without`base_url` can actually probe a another server that the one used as a backend.
 
 $Method BACKEND .backend()
 
