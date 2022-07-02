@@ -35,6 +35,8 @@ macro_rules! init_err {
     };
 }
 
+static EMPTY_BODY: bytes::Bytes = bytes::Bytes::new();
+
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone)]
 struct client {
@@ -290,6 +292,8 @@ impl client {
             .ok_or_else(|| init_err!(name))
     }
 
+    // we have a stacked Result here because the first one will fail at the
+    // vcl level, while the core one is salvageable
     fn get_resp<'a, 'b>(
         &self,
         vp_vcl: &mut VPriv<BgThread>,
@@ -376,7 +380,7 @@ impl client {
             .unwrap_or(None))
     }
 
-    pub fn body_as_string<'a>(
+    pub fn body_as_string<'a> (
         &mut self,
         _ctx: &Ctx,
         vp_vcl: &mut VPriv<BgThread>,
@@ -385,8 +389,7 @@ impl client {
     ) -> Result<&'a [u8]> {
         Ok(self
             .get_resp(vp_vcl, vp_task, name)?
-            // FIXME: unwrap
-            .map(|r| r.body.as_ref().unwrap().as_ref())
+            .map(|r| r.body.as_ref().unwrap_or(&EMPTY_BODY).as_ref())
             .unwrap_or("".as_bytes()))
     }
 
