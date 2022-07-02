@@ -490,11 +490,17 @@ impl BgThread {
     }
 }
 
+macro_rules! send {
+    ($tx:ident, $payload:expr) => {
+        $tx.send($payload).await.unwrap()
+    };
+}
+
 async fn process_req(req: Request, tx: Sender<RespMsg>) {
     let method = match reqwest::Method::from_bytes(req.method.as_bytes()) {
         Ok(m) => m,
         Err(e) => {
-            tx.send(RespMsg::Err(e.into())).await.unwrap();
+            send!(tx, RespMsg::Err(e.into()));
             return;
         }
     };
@@ -509,7 +515,7 @@ async fn process_req(req: Request, tx: Sender<RespMsg>) {
     }
     let mut resp = match rreq.send().await {
         Err(e) => {
-            tx.send(RespMsg::Err(e.into())).await.unwrap();
+            send!(tx, RespMsg::Err(e.into()));
             return;
         }
         Ok(resp) => resp,
@@ -523,14 +529,14 @@ async fn process_req(req: Request, tx: Sender<RespMsg>) {
     if req.vcl {
         beresp.body = match resp.bytes().await {
             Err(e) => {
-                tx.send(RespMsg::Err(e.into())).await.unwrap();
+                send!(tx, RespMsg::Err(e.into()));
                 return;
             }
             Ok(b) => Some(b),
         };
-        tx.send(RespMsg::Hdrs(beresp)).await.unwrap();
+        send!(tx, RespMsg::Hdrs(beresp));
     } else {
-        tx.send(RespMsg::Hdrs(beresp)).await.unwrap();
+        send!(tx, RespMsg::Hdrs(beresp));
 
         loop {
             match resp.chunk().await {
@@ -541,7 +547,7 @@ async fn process_req(req: Request, tx: Sender<RespMsg>) {
                     }
                 }
                 Err(e) => {
-                    let _ = tx.send(RespMsg::Err(e.into())).await.unwrap();
+                    send!(tx, RespMsg::Err(e.into()));
                     return;
                 }
             };
@@ -575,12 +581,13 @@ impl VFP for BackendResp {
                 };
             }
 
-            let to_write = &self.bytes.as_ref().unwrap()[self.cursor..];
+            let pull_buf = self.bytes.as_ref().unwrap();
+            let to_write = &pull_buf[self.cursor..];
             let _n = buf.write(to_write).unwrap();
             self.cursor += _n;
             n += _n;
-            assert!(self.cursor <= self.bytes.as_ref().unwrap().len());
-            if self.cursor == self.bytes.as_ref().unwrap().len() {
+            assert!(self.cursor <= pull_buf.len());
+            if self.cursor == pull_buf.len() {
                 self.bytes = None;
             }
         }
@@ -626,6 +633,18 @@ unsafe extern "C" fn body_send_iterate(
     } else {
         0
     }
+}
+
+macro_rules! maybe_fail {
+    ($ctx:expr, $e:expr) => {
+            match $e {
+                Ok(v) => v,
+                Err(e) => {
+                    $ctx.fail(&e.to_string());
+                    return -1;
+                },
+            }
+    };
 }
 
 unsafe extern "C" fn be_gethdrs(
@@ -721,24 +740,28 @@ unsafe extern "C" fn be_gethdrs(
         RespMsg::Err(_) => return 1,
         _ => unreachable!(),
     };
-    let mut beresp = ctx.http_beresp.unwrap();
+    let beresp = ctx.http_beresp.as_mut().unwrap();
     beresp.set_status(resp.status as u16);
-    beresp.set_proto("HTTP/1.1").unwrap();
+    maybe_fail!(ctx, beresp.set_proto("HTTP/1.1"));
     for (k, v) in &resp.headers {
-        beresp.set_header(k.as_str(), v.to_str().unwrap()).unwrap();
+        maybe_fail!(ctx, beresp.set_header(k.as_str(), maybe_fail!(ctx, v.to_str())));
     }
-    (*(*ctx.raw).bo).htc = varnish_sys::WS_Alloc(
-        (*(*ctx.raw).bo).ws.as_mut_ptr(),
+    bo.htc = varnish_sys::WS_Alloc(
+        bo.ws.as_mut_ptr(),
         std::mem::size_of::<varnish_sys::http_conn>() as u32,
     ) as *mut varnish_sys::http_conn;
-    let htc = (*(*ctx.raw).bo).htc.as_mut().unwrap(); // TODO: check ws return
+    if bo.htc.is_null() {
+        ctx.fail("reqwest: insuficient workspace");
+        return -1;
+    }
+    let htc = bo.htc.as_mut().unwrap();
     htc.magic = varnish_sys::HTTP_CONN_MAGIC;
     htc.body_status = varnish_sys::BS_CHUNKED.as_ptr();
     htc.doclose = &varnish_sys::SC_REM_CLOSE[0];
 
-    let vfe = varnish_sys::VFP_Push((*(*ctxp).bo).vfc, &REQWEST_VFP.vfp);
+    let vfe = varnish_sys::VFP_Push(bo.vfc, &REQWEST_VFP.vfp);
     if vfe.is_null() {
-        -1 // TODO better err code
+        -1
     } else {
         let brm = BackendResp {
             bytes: None,
