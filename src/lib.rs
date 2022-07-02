@@ -817,18 +817,13 @@ unsafe extern "C" fn be_event(be: varnish_sys::VCL_BACKEND, e: varnish_sys::vcl_
         // start the probing loop
         Event::Warm => {
             let name = client.name.clone();
-            let exp_status = probe_state.spec.exp_status;
-            let initial = probe_state.spec.initial;
-            let timeout = probe_state.spec.timeout;
+            let spec = probe_state.spec.clone();
             let url = probe_state.url.clone();
-            let window = probe_state.spec.window;
-            let threshold = probe_state.spec.threshold;
-            let interval = probe_state.spec.interval;
             let history = &probe_state.history;
             let avg = &probe_state.avg;
             probe_state.join_handle = Some(bgt.rt.spawn(async move {
                 let mut h = 0_u64;
-                for i in 0..std::cmp::min(initial, 64) {
+                for i in 0..std::cmp::min(spec.initial, 64) {
                     h |= 1 << i;
                 }
                 history.store(h, Ordering::Relaxed);
@@ -837,7 +832,7 @@ unsafe extern "C" fn be_event(be: varnish_sys::VCL_BACKEND, e: varnish_sys::vcl_
                     let msg;
                     let mut time = 0_f64;
                     let new_bit = match reqwest::ClientBuilder::new()
-                        .timeout(timeout)
+                        .timeout(spec.timeout)
                         .build()
                         .map(|req| req.get(url.clone()).send())
                     {
@@ -852,7 +847,7 @@ unsafe extern "C" fn be_event(be: varnish_sys::VCL_BACKEND, e: varnish_sys::vcl_
                                     msg = format!("Error: {}", e);
                                     false
                                 }
-                                Ok(resp) if resp.status().as_u16() as u32 == exp_status => {
+                                Ok(resp) if resp.status().as_u16() as u32 == spec.exp_status => {
                                     msg = format!("Success: {}", resp.status().as_u16());
                                     if avg_rate < 4.0 {
                                         avg_rate += 1.0;
@@ -865,7 +860,7 @@ unsafe extern "C" fn be_event(be: varnish_sys::VCL_BACKEND, e: varnish_sys::vcl_
                                 Ok(resp) => {
                                     msg = format!(
                                         "Error: expected {} status, got {}",
-                                        exp_status,
+                                        spec.exp_status,
                                         resp.status().as_u16()
                                     );
                                     false
@@ -875,7 +870,7 @@ unsafe extern "C" fn be_event(be: varnish_sys::VCL_BACKEND, e: varnish_sys::vcl_
                     };
                     let bitmap = history.load(Ordering::Relaxed);
                     let (bitmap, healthy, changed) =
-                        update_health(bitmap, threshold, window, new_bit);
+                        update_health(bitmap, spec.threshold, spec.window, new_bit);
                     log(
                         LogTag::BackendHealth,
                         &format!(
@@ -884,16 +879,16 @@ unsafe extern "C" fn be_event(be: varnish_sys::VCL_BACKEND, e: varnish_sys::vcl_
                             if changed { "Went" } else { "Still" },
                             if healthy { "healthy" } else { "sick" },
                             "UNIMPLEMENTED",
-                            good_probes(bitmap, window),
-                            threshold,
-                            window,
+                            good_probes(bitmap, spec.window),
+                            spec.threshold,
+                            spec.window,
                             time,
                             *avg.lock().unwrap(),
                             msg
                         ),
                     );
                     history.store(bitmap, Ordering::Relaxed);
-                    tokio::time::sleep(interval).await;
+                    tokio::time::sleep(spec.interval).await;
                 }
             }));
         }
