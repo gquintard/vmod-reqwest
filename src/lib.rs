@@ -244,7 +244,7 @@ impl client {
         name: &str,
         url: &str,
         method: &str,
-    ) -> Result<()> {
+    ) {
         if vp_task.as_ref().is_none() {
             vp_task.store(Vec::new());
         }
@@ -270,7 +270,6 @@ impl client {
             }),
             Some(e) => e.transaction = t,
         }
-        Ok(())
     }
 
     fn vcl_send(&self, bgt: &BgThread, t: &mut VclTransaction) {
