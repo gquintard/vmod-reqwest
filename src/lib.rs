@@ -624,11 +624,10 @@ unsafe extern "C" fn body_send_iterate(
     let buf = std::slice::from_raw_parts(ptr as *const u8, l as usize);
     let bytes = hyper::body::Bytes::copy_from_slice(buf);
 
-    let err = body_chan
+    if body_chan
         .rt
         .block_on(async { body_chan.chan.send_data(bytes).await })
-        .is_err();
-    if err {
+        .is_err() {
         1
     } else {
         0
