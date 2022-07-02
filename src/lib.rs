@@ -636,15 +636,10 @@ unsafe extern "C" fn body_send_iterate(
     let buf = std::slice::from_raw_parts(ptr as *const u8, l as usize);
     let bytes = hyper::body::Bytes::copy_from_slice(buf);
 
-    if body_chan
+    body_chan
         .rt
         .block_on(async { body_chan.chan.send_data(bytes).await })
-        .is_err()
-    {
-        1
-    } else {
-        0
-    }
+        .is_err().into()
 }
 
 unsafe extern "C" fn be_gethdrs(
@@ -928,11 +923,7 @@ unsafe extern "C" fn be_healthy(
     assert!(probe_state.spec.window <= 64);
 
     let bitmap = probe_state.history.load(Ordering::Relaxed);
-    if is_healthy(bitmap, probe_state.spec.window, probe_state.spec.threshold) {
-        1
-    } else {
-        0
-    }
+    is_healthy(bitmap, probe_state.spec.window, probe_state.spec.threshold).into()
 }
 
 unsafe extern "C" fn be_finish(ctx: *const varnish_sys::vrt_ctx, _arg1: varnish_sys::VCL_BACKEND) {
