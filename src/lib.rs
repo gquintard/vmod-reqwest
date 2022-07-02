@@ -797,7 +797,7 @@ fn update_health(
     (bitmap, new_health, new_health == old_health)
 }
 
-// cheating hard with the 'static lifetime, but the event function will stop us
+// cheating hard with the 'static lifetime, but the be_event function will stop us
 // before the references are invalid
 fn spawn_probe(bgt: &'static BgThread, probe_state: &'static mut ProbeState, name: String) {
     let spec = probe_state.spec.clone();
