@@ -254,7 +254,7 @@ impl client {
             method: method.into(),
             url: url.into(),
             headers: Vec::new(),
-            body: Body::None,
+            body: ReqBody::None,
             client: self.client.clone(),
             vcl: true,
         });
@@ -364,7 +364,7 @@ impl client {
         body: &str,
     ) -> Result<()> {
         if let VclTransaction::Req(req) = self.get_transaction(vp_task, name)? {
-            req.body = Body::Full(Vec::from(body));
+            req.body = ReqBody::Full(Vec::from(body));
             Ok(())
         } else {
             Err(init_err!(name))
@@ -450,7 +450,7 @@ struct Request {
     url: String,
     method: String,
     headers: Vec<(String, String)>,
-    body: Body,
+    body: ReqBody,
     client: reqwest::Client,
     vcl: bool,
 }
@@ -465,7 +465,7 @@ pub struct Response {
 }
 
 #[derive(Debug)]
-enum Body {
+enum ReqBody {
     None,
     Full(Vec<u8>),
     Stream(hyper::Body),
@@ -521,9 +521,9 @@ async fn process_req(req: Request, tx: Sender<RespMsg>) {
         rreq = rreq.header(k, v);
     }
     match req.body {
-        Body::None => (),
-        Body::Stream(b) => rreq = rreq.body(b),
-        Body::Full(v) => rreq = rreq.body(v),
+        ReqBody::None => (),
+        ReqBody::Stream(b) => rreq = rreq.body(b),
+        ReqBody::Full(v) => rreq = rreq.body(v),
     }
     let mut resp = match rreq.send().await {
         Err(e) => {
@@ -692,7 +692,7 @@ unsafe extern "C" fn be_gethdrs(
         method: bereq.method().unwrap().to_string(),
         url,
         client: client.client.clone(),
-        body: Body::Stream(body),
+        body: ReqBody::Stream(body),
         vcl: false,
         headers: bereq
             .into_iter()
