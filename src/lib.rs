@@ -1,6 +1,6 @@
 varnish::boilerplate!();
 
-use anyhow::{anyhow, bail, Error, Result};
+use anyhow::{anyhow, bail, Context, Error, Result};
 use bytes::Bytes;
 use std::boxed::Box;
 use std::io::Write;
@@ -27,6 +27,7 @@ varnish::vtc!(test07);
 varnish::vtc!(test08);
 varnish::vtc!(test09);
 varnish::vtc!(test10);
+varnish::vtc!(test11);
 
 macro_rules! init_err {
     ($n:ident) => {
@@ -54,7 +55,7 @@ struct ProbeState<'a> {
 }
 
 struct VCLBackend<'a> {
-    bgt: *const BgThread,
+    bgt: &'a BgThread,
     client: Box<client>,
     probe_state: Option<ProbeState<'a>>,
 }
@@ -102,17 +103,17 @@ fn build_probe_state<'a>(mut probe: Probe<'a>, base_url: Option<&str>) -> Result
         probe.initial = probe.threshold - 1;
     }
     probe.initial = std::cmp::min(probe.initial, probe.threshold);
-
     let spec_url = match probe.request {
         probe::Request::URL(ref u) => u,
         _ => bail!("can't use a probe without .url"),
     };
     let url = if let Some(base_url) = base_url {
-        reqwest::Url::parse(&format!("{}{}", base_url, spec_url))?
+        let full_url = format!("{}{}", base_url, spec_url);
+        reqwest::Url::parse(&full_url).with_context(|| format!("probe endpoint {}", full_url))?
     } else if spec_url.starts_with('/') {
-        bail!("client has no .base_url, and the probe doesn't have a fully-qualified URL as .url",);
+        bail!("client has no .base_url, and the probe doesn't have a fully-qualified URL as .url");
     } else {
-        reqwest::Url::parse(spec_url)?
+        reqwest::Url::parse(spec_url).with_context(|| format!("probe endpoint {}", spec_url))?
     };
     Ok(ProbeState {
         spec: probe,
@@ -157,20 +158,29 @@ impl client {
             rcb = rcb.connect_timeout(t);
         }
         if let Some(proxy) = http_proxy {
-            rcb = rcb.proxy(reqwest::Proxy::http(proxy)?);
+            rcb = rcb.proxy(reqwest::Proxy::http(proxy).with_context(|| {
+                format!("reqwest: couldn't initialize {}'s HTTP proxy", vcl_name)
+            })?);
         }
         if let Some(proxy) = https_proxy {
-            rcb = rcb.proxy(reqwest::Proxy::http(proxy)?);
+            rcb = rcb.proxy(reqwest::Proxy::https(proxy).with_context(|| {
+                format!("reqwest: couldn't initialize {}'s HTTPS proxy", vcl_name)
+            })?);
         }
         if follow <= 0 {
             rcb = rcb.redirect(reqwest::redirect::Policy::none());
         } else {
             rcb = rcb.redirect(reqwest::redirect::Policy::limited(follow as usize));
         }
-        let reqwest_client = rcb.build()?;
+        let reqwest_client = rcb
+            .build()
+            .with_context(|| format!("reqwest: couldn't initialize {}", vcl_name))?;
 
         if https.is_some() && base_url.is_some() {
-            bail!("reqwest: client() can't take both an https and a base_url argument");
+            bail!(
+                "reqwest: couldn't initialize {}: can't take both an https and a base_url argument",
+                vcl_name
+            );
         }
         let mut client = Box::new(client {
             name: vcl_name.to_owned(),
@@ -182,13 +192,16 @@ impl client {
 
         let (probe_state, methods) = match probe {
             Some(spec) => (
-                Some(build_probe_state(spec, client.base_url.as_deref())?),
+                Some(
+                    build_probe_state(spec, client.base_url.as_deref())
+                        .with_context(|| format!("reqwest: failed to add probe to {}", vcl_name))?,
+                ),
                 METHODS_WITH_PROBE,
             ),
             None => (None, METHODS_WITHOUT_PROBE),
         };
         let backend_p = Box::into_raw(Box::new(VCLBackend {
-            bgt: vp_vcl.as_ref().unwrap() as *const BgThread,
+            bgt: vp_vcl.as_ref().unwrap(),
             client: client.clone(),
             probe_state,
         })) as *mut VCLBackend;
@@ -372,6 +385,7 @@ impl client {
     ) -> Result<&'a [u8]> {
         Ok(self
             .get_resp(vp_vcl, vp_task, name)?
+            // FIXME: unwrap
             .map(|r| r.body.as_ref().unwrap().as_ref())
             .unwrap_or("".as_bytes()))
     }
@@ -616,7 +630,7 @@ unsafe extern "C" fn be_gethdrs(
     be: varnish_sys::VCL_BACKEND,
 ) -> ::std::os::raw::c_int {
     let VCLBackend {
-        bgt: bgtp, client, ..
+        bgt, client, ..
     } = ((*be).priv_ as *const VCLBackend).as_ref().unwrap();
     let mut ctx = Ctx::new(ctxp as *mut varnish_sys::vrt_ctx);
 
@@ -628,7 +642,6 @@ unsafe extern "C" fn be_gethdrs(
         return -1;
     }
 
-    let bgt = bgtp.as_ref().unwrap();
     let bereq = ctx.http_bereq.as_ref().unwrap();
 
     let bereq_url = bereq.url().unwrap();
@@ -761,12 +774,11 @@ unsafe extern "C" fn be_event(be: varnish_sys::VCL_BACKEND, e: varnish_sys::vcl_
     let event = Event::new(e);
     let VCLBackend {
         probe_state,
-        bgt: bgtp,
+        bgt,
         client,
         ..
     } = ((*be).priv_ as *mut VCLBackend).as_mut().unwrap();
 
-    let bgt = bgtp.as_ref().unwrap();
     // nothing to do
     let mut probe_state = match probe_state {
         None => return,
