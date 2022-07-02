@@ -35,6 +35,24 @@ macro_rules! init_err {
     };
 }
 
+macro_rules! send {
+    ($tx:ident, $payload:expr) => {
+        $tx.send($payload).await.unwrap()
+    };
+}
+
+macro_rules! maybe_fail {
+    ($ctx:expr, $e:expr) => {
+        match $e {
+            Ok(v) => v,
+            Err(e) => {
+                $ctx.fail(&e.to_string());
+                return -1;
+            }
+        }
+    };
+}
+
 static EMPTY_BODY: bytes::Bytes = bytes::Bytes::new();
 
 #[allow(non_camel_case_types)]
@@ -380,7 +398,7 @@ impl client {
             .unwrap_or(None))
     }
 
-    pub fn body_as_string<'a> (
+    pub fn body_as_string<'a>(
         &mut self,
         _ctx: &Ctx,
         vp_vcl: &mut VPriv<BgThread>,
@@ -488,12 +506,6 @@ impl BgThread {
         self.sender.send((req, tx)).unwrap();
         rx
     }
-}
-
-macro_rules! send {
-    ($tx:ident, $payload:expr) => {
-        $tx.send($payload).await.unwrap()
-    };
 }
 
 async fn process_req(req: Request, tx: Sender<RespMsg>) {
@@ -627,32 +639,19 @@ unsafe extern "C" fn body_send_iterate(
     if body_chan
         .rt
         .block_on(async { body_chan.chan.send_data(bytes).await })
-        .is_err() {
+        .is_err()
+    {
         1
     } else {
         0
     }
 }
 
-macro_rules! maybe_fail {
-    ($ctx:expr, $e:expr) => {
-            match $e {
-                Ok(v) => v,
-                Err(e) => {
-                    $ctx.fail(&e.to_string());
-                    return -1;
-                },
-            }
-    };
-}
-
 unsafe extern "C" fn be_gethdrs(
     ctxp: *const varnish_sys::vrt_ctx,
     be: varnish_sys::VCL_BACKEND,
 ) -> ::std::os::raw::c_int {
-    let VCLBackend {
-        bgt, client, ..
-    } = ((*be).priv_ as *const VCLBackend).as_ref().unwrap();
+    let VCLBackend { bgt, client, .. } = ((*be).priv_ as *const VCLBackend).as_ref().unwrap();
     let mut ctx = Ctx::new(ctxp as *mut varnish_sys::vrt_ctx);
 
     if be_healthy(ctxp, be, ptr::null_mut()) != 1 {
@@ -743,7 +742,10 @@ unsafe extern "C" fn be_gethdrs(
     beresp.set_status(resp.status as u16);
     maybe_fail!(ctx, beresp.set_proto("HTTP/1.1"));
     for (k, v) in &resp.headers {
-        maybe_fail!(ctx, beresp.set_header(k.as_str(), maybe_fail!(ctx, v.to_str())));
+        maybe_fail!(
+            ctx,
+            beresp.set_header(k.as_str(), maybe_fail!(ctx, v.to_str()))
+        );
     }
     bo.htc = varnish_sys::WS_Alloc(
         bo.ws.as_mut_ptr(),
@@ -795,6 +797,85 @@ fn update_health(
     (bitmap, new_health, new_health == old_health)
 }
 
+// cheating hard with the 'static lifetime, but the event function will stop us
+// before the references are invalid
+fn spawn_probe(bgt: &'static BgThread, probe_state: &'static mut ProbeState, name: String) {
+    let spec = probe_state.spec.clone();
+    let url = probe_state.url.clone();
+    let history = &probe_state.history;
+    let avg = &probe_state.avg;
+    probe_state.join_handle = Some(bgt.rt.spawn(async move {
+        let mut h = 0_u64;
+        for i in 0..std::cmp::min(spec.initial, 64) {
+            h |= 1 << i;
+        }
+        history.store(h, Ordering::Relaxed);
+        let mut avg_rate = 0_f64;
+        loop {
+            let msg;
+            let mut time = 0_f64;
+            let new_bit = match reqwest::ClientBuilder::new()
+                .timeout(spec.timeout)
+                .build()
+                .map(|req| req.get(url.clone()).send())
+            {
+                Err(e) => {
+                    msg = e.to_string();
+                    false
+                }
+                Ok(resp) => {
+                    let start = Instant::now();
+                    match resp.await {
+                        Err(e) => {
+                            msg = format!("Error: {}", e);
+                            false
+                        }
+                        Ok(resp) if resp.status().as_u16() as u32 == spec.exp_status => {
+                            msg = format!("Success: {}", resp.status().as_u16());
+                            if avg_rate < 4.0 {
+                                avg_rate += 1.0;
+                            }
+                            time = start.elapsed().as_secs_f64();
+                            let mut _avg = avg.lock().unwrap();
+                            *_avg += (time - *_avg) / avg_rate;
+                            true
+                        }
+                        Ok(resp) => {
+                            msg = format!(
+                                "Error: expected {} status, got {}",
+                                spec.exp_status,
+                                resp.status().as_u16()
+                            );
+                            false
+                        }
+                    }
+                }
+            };
+            let bitmap = history.load(Ordering::Relaxed);
+            let (bitmap, healthy, changed) =
+                update_health(bitmap, spec.threshold, spec.window, new_bit);
+            log(
+                LogTag::BackendHealth,
+                &format!(
+                    "{} {} {} {} {} {} {} {} {} {}",
+                    name,
+                    if changed { "Went" } else { "Still" },
+                    if healthy { "healthy" } else { "sick" },
+                    "UNIMPLEMENTED",
+                    good_probes(bitmap, spec.window),
+                    spec.threshold,
+                    spec.window,
+                    time,
+                    *avg.lock().unwrap(),
+                    msg
+                ),
+            );
+            history.store(bitmap, Ordering::Relaxed);
+            tokio::time::sleep(spec.interval).await;
+        }
+    }));
+}
+
 unsafe extern "C" fn be_event(be: varnish_sys::VCL_BACKEND, e: varnish_sys::vcl_event_e) {
     let event = Event::new(e);
     let VCLBackend {
@@ -815,81 +896,7 @@ unsafe extern "C" fn be_event(be: varnish_sys::VCL_BACKEND, e: varnish_sys::vcl_
     match event {
         // start the probing loop
         Event::Warm => {
-            let name = client.name.clone();
-            let spec = probe_state.spec.clone();
-            let url = probe_state.url.clone();
-            let history = &probe_state.history;
-            let avg = &probe_state.avg;
-            probe_state.join_handle = Some(bgt.rt.spawn(async move {
-                let mut h = 0_u64;
-                for i in 0..std::cmp::min(spec.initial, 64) {
-                    h |= 1 << i;
-                }
-                history.store(h, Ordering::Relaxed);
-                let mut avg_rate = 0_f64;
-                loop {
-                    let msg;
-                    let mut time = 0_f64;
-                    let new_bit = match reqwest::ClientBuilder::new()
-                        .timeout(spec.timeout)
-                        .build()
-                        .map(|req| req.get(url.clone()).send())
-                    {
-                        Err(e) => {
-                            msg = e.to_string();
-                            false
-                        }
-                        Ok(resp) => {
-                            let start = Instant::now();
-                            match resp.await {
-                                Err(e) => {
-                                    msg = format!("Error: {}", e);
-                                    false
-                                }
-                                Ok(resp) if resp.status().as_u16() as u32 == spec.exp_status => {
-                                    msg = format!("Success: {}", resp.status().as_u16());
-                                    if avg_rate < 4.0 {
-                                        avg_rate += 1.0;
-                                    }
-                                    time = start.elapsed().as_secs_f64();
-                                    let mut _avg = avg.lock().unwrap();
-                                    *_avg += (time - *_avg) / avg_rate;
-                                    true
-                                }
-                                Ok(resp) => {
-                                    msg = format!(
-                                        "Error: expected {} status, got {}",
-                                        spec.exp_status,
-                                        resp.status().as_u16()
-                                    );
-                                    false
-                                }
-                            }
-                        }
-                    };
-                    let bitmap = history.load(Ordering::Relaxed);
-                    let (bitmap, healthy, changed) =
-                        update_health(bitmap, spec.threshold, spec.window, new_bit);
-                    log(
-                        LogTag::BackendHealth,
-                        &format!(
-                            "{} {} {} {} {} {} {} {} {} {}",
-                            name,
-                            if changed { "Went" } else { "Still" },
-                            if healthy { "healthy" } else { "sick" },
-                            "UNIMPLEMENTED",
-                            good_probes(bitmap, spec.window),
-                            spec.threshold,
-                            spec.window,
-                            time,
-                            *avg.lock().unwrap(),
-                            msg
-                        ),
-                    );
-                    history.store(bitmap, Ordering::Relaxed);
-                    tokio::time::sleep(spec.interval).await;
-                }
-            }));
+            spawn_probe(bgt, probe_state, client.name.clone());
         }
         Event::Cold => {
             probe_state.join_handle.as_ref().unwrap().abort();
