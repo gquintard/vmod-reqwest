@@ -5,7 +5,7 @@ server s1 {
 
 varnish v1 -vcl+backend {} -start
 
-varnish v1 -errvcl "relative URL without a base" { 
+varnish v1 -errvcl "failed to add probe to client" { 
 	import reqwest from "${vmod}";
 
 	# because .url is a full URL, p1 is tied to s2
