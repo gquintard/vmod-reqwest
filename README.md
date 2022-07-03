@@ -32,7 +32,7 @@ Don't hesitate to open github issues if something is unclear or impractical. You
 
 ## VCL Examples
 
-### VCL: synchronous request and response headers
+### VCL request: synchronous request and response headers
 ``` vcl
 import reqwest;
 
@@ -51,7 +51,7 @@ sub vcl_recv {
 }
 ```
 
-### VCL: multiple requests in-flight at once
+### VCL request: multiple requests in-flight at once
 
 ``` vcl
 import reqwest;
@@ -79,7 +79,7 @@ sub vcl_recv {
 }
 ```
 
-### Fire-and-forget request with body
+### VCL request: Fire-and-forget request with body
 
 ``` vcl
 import reqwest;
@@ -96,7 +96,7 @@ sub vcl_recv {
 }
 ```
 
-### HTTPS backend following up to 5 redirect hops, and brotli auto-decompression
+### Backend: HTTPS, following up to 5 redirect hops, and brotli auto-decompression
 
 ``` vcl
 import reqwest;
@@ -112,7 +112,7 @@ sub vcl_recv {
 }
 ```
 
-### Using a probe to one backend to determine another's health
+### Backend: Using a probe to one backend to determine another's health
 
 ``` vcl
 import reqwest;
