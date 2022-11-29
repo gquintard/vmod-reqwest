@@ -1,5 +1,4 @@
 FROM rust:1.61-buster
-COPY --from=0 /pkgs /pkgs
 
 WORKDIR /vmod_reqwest
 ARG VMOD_REQWEST_VERSION=0.0.5
@@ -12,4 +11,4 @@ RUN curl -Lo dist.tar.gz ${RELEASE_URL} && \
 	cargo build --release
 
 FROM varnish:7.2
-COPY --from=1 /vmod_reqwest/target/release/libvmod_reqwest.so /usr/lib/varnish/vmods/
+COPY --from=0 /vmod_reqwest/target/release/libvmod_reqwest.so /usr/lib/varnish/vmods/
