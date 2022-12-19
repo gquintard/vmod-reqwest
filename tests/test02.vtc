@@ -27,6 +27,10 @@ varnish v1 -vcl {
 } -start
 varnish v1 -cliok "param.set debug +syncvsl"
 
+logexpect l1 -v v1 -i Fetch_Body {
+        expect 0 * Fetch_Body "length stream"
+} -start
+
 client c1 {
 	txreq -method "POST" -hdr "host: ${s1_addr}:${s1_port}" -nolen -hdr "Transfer-Encoding: chunked"
 	chunked "0123456789"
@@ -38,5 +42,7 @@ client c1 {
 	expect resp.http.bleep == "bloop"
 	expect resp.body == "0123456789"
 } -run
+
+logexpect l1 -wait
 
 server s1 -wait

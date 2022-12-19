@@ -9,6 +9,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedSender};
 use varnish::vcl::ctx::{log, Ctx, Event, LogTag};
 use varnish::vcl::probe;
@@ -459,6 +460,7 @@ struct Request {
 #[derive(Debug)]
 pub struct Response {
     headers: reqwest::header::HeaderMap,
+    content_length: Option<u64>,
     body: Option<Bytes>,
     status: i64,
 }
@@ -534,6 +536,7 @@ async fn process_req(req: Request, tx: Sender<RespMsg>) {
     let mut beresp = Response {
         status: resp.status().as_u16() as i64,
         headers: resp.headers().clone(),
+        content_length: resp.content_length(),
         body: None,
     };
 
@@ -751,7 +754,21 @@ unsafe extern "C" fn be_gethdrs(
     }
     let htc = bo.htc.as_mut().unwrap();
     htc.magic = varnish_sys::HTTP_CONN_MAGIC;
-    htc.body_status = varnish_sys::BS_CHUNKED.as_ptr();
+    match resp.content_length {
+        None => {
+            htc.body_status = varnish_sys::BS_CHUNKED.as_ptr();
+            htc.content_length = -1;
+        },
+        Some(cl) => {
+            htc.body_status = if cl == 0 {
+                varnish_sys::BS_NONE.as_ptr()
+            } else {
+                varnish_sys::BS_LENGTH.as_ptr()
+            };
+            htc.content_length = cl as i64;
+        },
+    }
+    htc.content_length = -1;
     htc.doclose = &varnish_sys::SC_REM_CLOSE[0];
 
     let vfe = varnish_sys::VFP_Push(bo.vfc, &REQWEST_VFP.vfp);
