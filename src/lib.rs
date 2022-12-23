@@ -77,7 +77,7 @@ struct ProbeState<'a> {
 
 struct VCLBackend<'a> {
     bgt: &'a BgThread,
-    client: Box<client>,
+    client: client,
     probe_state: Option<ProbeState<'a>>,
 }
 
@@ -203,13 +203,13 @@ impl client {
                 vcl_name
             );
         }
-        let mut client = Box::new(client {
+        let mut client = client {
             name: vcl_name.to_owned(),
             client: reqwest_client,
             https: https.unwrap_or(false),
             be: std::ptr::null(),
             base_url: base_url.map(|s| s.into()),
-        });
+        };
 
         let (probe_state, methods) = match probe {
             Some(spec) => (
@@ -235,7 +235,7 @@ impl client {
             )
         };
         assert!(!client.be.is_null());
-        Ok(*client)
+        Ok(client)
     }
 
     pub fn init(
@@ -743,8 +743,8 @@ unsafe extern "C" fn be_gethdrs(
     maybe_fail!(ctx, beresp.set_proto("HTTP/1.1"));
     for (k, v) in &resp.headers {
         maybe_fail!(
-            ctx,
-            beresp.set_header(k.as_str(), maybe_fail!(ctx, v.to_str()))
+           ctx,
+           beresp.set_header(k.as_str(), maybe_fail!(ctx, v.to_str()))
         );
     }
     bo.htc = varnish_sys::WS_Alloc(
@@ -785,6 +785,11 @@ unsafe extern "C" fn be_gethdrs(
         // dropped by wrap_vfp_fini from VfpWrapper
         let respp = Box::into_raw(Box::new(brm));
         (*vfe).priv1 = respp as *mut std::ffi::c_void;
+
+        ctx.log(
+            varnish::vcl::ctx::LogTag::FetchError,
+            &format!("--------------"),
+        );
         0
     }
 }
