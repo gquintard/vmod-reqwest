@@ -6,6 +6,12 @@ server s1 {
         chunked "0123456789"
         chunkedlen 0
 	expect req.body == "0123456789abcdefABCDEF"
+
+	close
+	accept
+
+	rxreq
+	txresp
 } -start
 
 # VCL, no backend needed
@@ -38,6 +44,11 @@ client c1 {
 	rxresp
 	expect resp.http.bleep == "bloop"
 	expect resp.body == "0123456789"
+
+	txreq -url "/empty" -hdr "host: ${s1_addr}:${s1_port}"
+	rxresp
+	expect resp.status == 200
+	expect resp.body == ""
 } -run
 
 logexpect l1 -wait

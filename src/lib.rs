@@ -732,7 +732,10 @@ unsafe extern "C" fn be_gethdrs(
 
     let resp = match resp_rx.blocking_recv().unwrap() {
         RespMsg::Hdrs(resp) => resp,
-        RespMsg::Err(_) => return 1,
+        RespMsg::Err(e) => {
+            ctx.fail(&e.to_string());
+            return -1;
+        },
         _ => unreachable!(),
     };
     let beresp = ctx.http_beresp.as_mut().unwrap();
@@ -768,7 +771,6 @@ unsafe extern "C" fn be_gethdrs(
             htc.content_length = cl as i64;
         },
     }
-    htc.content_length = -1;
     htc.doclose = &varnish_sys::SC_REM_CLOSE[0];
 
     let vfe = varnish_sys::VFP_Push(bo.vfc, &REQWEST_VFP.vfp);
