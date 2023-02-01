@@ -1,0 +1,33 @@
+# Maintainer: Guillaume Quintard <guillaume.quintard@gmail.com>
+
+pkgname=vmod_reqwest
+pkgver=@VMOD_VERSION@
+pkgrel=1
+pkgdesc="Dynamic backends for Varnish"
+subpackages="$pkgname-doc"
+depends='varnish~=@VARNISH_VERSION@'
+makedepends='cargo clang-libs python3 py3-docutils varnish-dev~=@VARNISH_VERSION@'
+arch='x86_64'
+url="https://github.com/gquintard/vmod_reqwest"
+source="$pkgname-$pkgver.tar.gz"
+license='BSD'
+# varnishtest seems to have an issue, avoid it for now
+options="!check"
+
+build() {
+    cargo build --release
+    $(pkg-config --variable=vmodtool varnishapi) vmod.vcc
+    rst2man $pkgname.man.rst > $pkgname.3
+}
+
+check() {
+    cargo test --release
+}
+
+package() {
+    install -D $srcdir/target/release/lib$pkgname.so "$pkgdir/usr/lib/varnish/vmods/lib$pkgname.so"
+    install -D $srcdir/$pkgname.3 "$pkgdir/usr/share/man/man3/$pkgname.3"
+    install -Dm644 $srcdir/LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
+
+sha512sums='SKIP  $pkgname-$pkgver.tar.gz'

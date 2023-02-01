@@ -2,23 +2,39 @@
 
 This is a vmod for [varnish](http://varnish-cache.org/) to send and receive HTTP requests from VCL, leveraging the [reqwest crate](https://docs.rs/reqwest/latest/reqwest/).
 
-It offers dynamic backend (no more reloading the VCL because of DNS changes) and similar features to [vmod_curl](https://github.com/varnish/libvmod-curl), but notably offers fire-and-forget capabilities and parallel request handling.
+It can be used in two different ways:
+- to provide dynamic backends, similar to [vmod_dynamic](https://github.com/nigoroll/libvmod-dynamic) or [vmod_goto](https://docs.varnish-software.com/varnish-cache-plus/vmods/goto/)
+  - Backend addresses are resolved when needed, not just when the VCL is loaded
+  - support for backends with an address defined ahead of time, but also on-the-fly
+  - probe support
+  - ability to index the health of a backend on a probe targeting another
+- as a mean to issue HTTP requests from VCL to communicate with third-party servers, much like [vmod_curl](https://github.com/varnish/libvmod-curl)
+  - parallel requests
+  - synchronous and asynchronous requests support
+
+And in both cases:
+- HTTP2 and HTTPS support
+- HTTP redirection support (it will automatically follow 30X responses)
+- (optional) automatic `gzip` and `brotli` decompression
 
 As usual, the full VCL API is described in [vmod.vcc](vmod.vcc).
 
-Don't hesitate to open github issues if somehting is unclear or impractical. You can also join us on [discord](https://discord.com/invite/EuwdvbZR6d).
+Don't hesitate to open github issues if something is unclear or impractical. You can also join us on [discord](https://discord.com/invite/EuwdvbZR6d).
 
 ## Version matching
 
 | vmod-reqwest | varnish |
 | :----------- | :-----: |
+| 0.0.6        | 7.2     |
+| 0.0.5        | 7.2     |
+| 0.0.4        | 7.1     |
 | 0.0.3        | 7.1     |
 | 0.0.2        | 7.0     |
 | 0.0.1        | 7.0     |
 
 ## VCL Examples
 
-### Send request and use response headers
+### VCL request: synchronous request and response headers
 ``` vcl
 import reqwest;
 
@@ -37,7 +53,35 @@ sub vcl_recv {
 }
 ```
 
-### Fire-and-forget request with body
+### VCL request: multiple requests in-flight at once
+
+``` vcl
+import reqwest;
+
+sub vcl_init {
+	new client = reqwest.client();
+}
+
+sub vcl_recv {
+	# build and send a request to the legacy service
+	client.init("req1", "https://login.example.com/user/" + req.http.user);
+	client.send("req1");
+
+	# same for the new endpoint
+	client.init("req2", "https://loginv2.example.com/user/" + req.http.user);
+	client.send("req2");
+
+	# let the request through if at least one of the services
+	# responded favorably
+	if (client.status("req1") == 200 || client.status("req2") == 200) {
+		return (lookup);
+	} else {
+		return (synth(403));
+	}
+}
+```
+
+### VCL request: Fire-and-forget request with body
 
 ``` vcl
 import reqwest;
@@ -49,30 +93,58 @@ sub vcl_init {
 sub vcl_recv {
 	# send a request into the void and don't worry if it completes or not
 	client.init("async", "https://api.example.com/log", "POST")
-	client.set_body("URL = " + req.url);
-	client.send();
+	client.set_body("async", "URL = " + req.url);
+	client.send("async");
 }
 ```
 
-### HTTPS backend following up to 5 redirect hops, and brotli auto-decompression
+### Backend: HTTPS, following up to 5 redirect hops, and brotli auto-decompression
 
 ``` vcl
 import reqwest;
 
 sub vcl_init {
-	new client = reqwest.client(base_url = "https://www.example.com/sub/directory", follow = 5, auto_brotli = true);
+	# note that "/sub/directory" will be prefixed to `bereq.url`
+	# upon sending the request to the backend
+	new be = reqwest.client(base_url = "https://www.example.com/sub/directory", follow = 5, auto_brotli = true);
 }
 
 sub vcl_recv {
-	set req.backend_hint = client.backend();
+	set req.backend_hint = be.backend();
 }
 ```
 
+### Backend: Using a probe to one backend to determine another's health
+
+``` vcl
+import reqwest;
+
+# create a probe to a specific endpoint
+probe p1 {
+	.url = "http://probed.example.com/probe";
+	.window = 4;
+	.initial = 2;
+	.threshold = 4;
+	.interval = 1s;
+}
+
+# attach the probe to a client
+sub vcl_init {
+	new be = reqwest.client(probe = p1);
+}
+
+# set the backend, which will use req.url+req.http.host as a destination,
+# but only if probed.example.com is replying to probes
+sub vcl_recv {
+	set req.backend_hint = be.backend();
+}
+```
 
 ## Requirements
 
 You'll need:
 - `cargo` (and the accompanying `rust` package)
+- `clang`
 - `python3`
 - the `varnish` 7.0.1 development libraries/headers ([depends on the `varnish` crate you are using](https://github.com/gquintard/varnish-rs#versions))
 
@@ -126,7 +198,7 @@ Then, follow distribution-specific instructions.
 ``` bash
 # create a work directory
 mkdir build
-# copy the tarball and PKGBUIL file, substituing the variables we care about
+# copy the tarball and PKGBUILD file, substituing the variables we care about
 cp vmod_reqwest-$VMOD_VERSION.tar.gz build
 sed -e "s/@VMOD_VERSION@/$VMOD_VERSION/" -e "s/@VARNISH_VERSION@/$VARNISH_VERSION/" pkg/arch/PKGBUILD > build/PKGBUILD
 

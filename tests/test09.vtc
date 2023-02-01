@@ -1,0 +1,40 @@
+varnishtest "backend.list"
+
+feature cmd "jq"
+
+server s1 {
+	loop 255 {
+		rxreq
+		expect req.url == "/probe"
+		txresp
+		close
+		accept
+	}
+} -start
+
+# VCL, no backend needed
+varnish v1 -arg "-p debug=+syncvsl" -vcl {
+	import reqwest from "${vmod}";
+
+	probe p1 {
+		.url = "/probe";
+		.window = 4;
+		.initial = 1;
+		.threshold = 3;
+		.interval = 1s;
+	}
+
+	backend s1 none;
+
+	sub vcl_init {
+		new client = reqwest.client(base_url = "http://${s1_addr}:${s1_port}", probe = p1);
+		new client2 = reqwest.client(base_url = "http://${s1_addr}:${s1_port}");
+	}
+} -start
+
+shell {
+	varnishadm -n ${v1_name} backend.list -j -p | jq
+	varnishadm -n ${v1_name} backend.list -j    | jq
+	varnishadm -n ${v1_name} backend.list
+	varnishadm -n ${v1_name} backend.list -p
+}

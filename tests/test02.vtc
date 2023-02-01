@@ -2,8 +2,14 @@ varnishtest "backend() with cached body"
 
 server s1 {
 	rxreq
-	txresp -hdr "bleep: bloop" -body "0123456789"
+	txresp -hdr "bleep: bloop" -hdr "connection: close" -body "0123456789"
 	expect req.body == "0123456789abcdefABCDEF"
+
+	close
+	accept
+
+	rxreq
+	txresp
 } -start
 
 # VCL, no backend needed
@@ -27,6 +33,10 @@ varnish v1 -vcl {
 } -start
 varnish v1 -cliok "param.set debug +syncvsl"
 
+logexpect l1 -v v1 -i Fetch_Body {
+        expect 0 * Fetch_Body "length stream"
+} -start
+
 client c1 {
 	txreq -method "POST" -hdr "host: ${s1_addr}:${s1_port}" -nolen -hdr "Transfer-Encoding: chunked"
 	chunked "0123456789"
@@ -37,6 +47,13 @@ client c1 {
 	rxresp
 	expect resp.http.bleep == "bloop"
 	expect resp.body == "0123456789"
+
+	txreq -url "/empty" -hdr "host: ${s1_addr}:${s1_port}"
+	rxresp
+	expect resp.status == 200
+	expect resp.body == ""
 } -run
+
+logexpect l1 -wait
 
 server s1 -wait

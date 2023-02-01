@@ -1,0 +1,30 @@
+# Maintainer: Guillaume Quintard <guillaume.quintard@gmail.com>
+
+pkgname=vmod_request
+pkgver=@VMOD_VERSION@
+pkgrel=1
+pkgdesc="Dynamic backends for Varnish"
+depends=('varnish=@VARNISH_VERSION@')
+makedepends=('cargo' 'python' 'python-docutils')
+arch=('x86_64')
+url="https://github.com/gquintard/vmod-reqwest"
+source=("$pkgname-$pkgver.tar.gz")
+license=('BSD')
+
+build() {
+    cargo build --release
+    $(pkg-config --variable=vmodtool varnishapi) vmod.vcc
+    rst2man $pkgname.man.rst > $pkgname.3
+}
+
+check() {
+    cargo test --release
+}
+
+package() {
+    install -D target/release/lib$pkgname.so "$pkgdir/$(pkg-config  --variable=vmoddir varnishapi)"
+    install -D $pkgname.3 "$pkgdir/usr/share/man/man3/$pkgname.3"
+    install -Dm644 "LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
+
+sha512sums=('SKIP')
