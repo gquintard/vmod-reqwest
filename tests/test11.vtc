@@ -20,7 +20,6 @@ varnish v1 -errvcl "failed to add probe to client" {
 	}
 
 	sub vcl_recv {
-		# this client will hit s1, but only if s2 is responding to probes
 		set req.backend_hint = client.backend();
 		set req.http.host = "${s1_addr}:${s1_port}";
 	}
