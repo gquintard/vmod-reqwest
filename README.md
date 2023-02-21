@@ -50,6 +50,8 @@ sub vcl_recv {
 	} else {
 		return (synth(403));
 	}
+	# grab a response header ("id-header") and save it to our VCL request
+	set req.http.user-id = client.header("sync", "id-header");
 }
 ```
 
@@ -78,9 +80,6 @@ sub vcl_recv {
 	} else {
 		return (synth(403));
 	}
-	# store headers from both requests
-	set req.http.user-id1 = client.header("req1", "id-header");
-	set req.http.user-id2 = client.header("req2", "user");
 }
 ```
 
