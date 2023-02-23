@@ -40,6 +40,9 @@ varnish v1 -vcl+backend {
 		set resp.http.s1_beep_0 = client.header("s1", "beep");
 		set resp.http.s1_beep_1 = client.header("s1", "beep", sep = ", ");
 		set resp.http.s1_beep_2 = client.header("s1", "beep", sep = " neat separator ");
+		set resp.http.s1_none_0 = client.header("s1", "none");
+		set resp.http.s1_none_1 = client.header("s1", "none", sep = ", ");
+		set resp.http.s1_none_2 = client.header("s1", "none", sep = " neat separator ");
 		set resp.http.s1_body = client.body_as_string("s1");
 	}
 } -start
@@ -57,6 +60,9 @@ client c1 {
 	expect resp.http.s1_beep_0 == "boop"
 	expect resp.http.s1_beep_1 == "boop"
 	expect resp.http.s1_beep_2 == "boop"
+	expect resp.http.s1_none_0 == ""
+	expect resp.http.s1_none_1 == ""
+	expect resp.http.s1_none_2 == ""
 	expect resp.http.s1_body == "9876543210"
 } -run
 
