@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 
+use reqwest::header::HeaderValue;
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedSender};
 use varnish::vcl::backend::{Backend, Serve, Transfer, VCLBackendPtr};
 use varnish::vcl::ctx::{log, Ctx, Event, LogTag};
@@ -617,16 +618,39 @@ impl client {
 
     pub fn header<'a>(
         &mut self,
-        _ctx: &Ctx,
+        ctx: &mut Ctx<'a>,
         vp_vcl: &mut VPriv<BgThread>,
         vp_task: &'a mut VPriv<Vec<Entry>>,
         name: &str,
         key: &str,
+        sep: Option<&str>,
     ) -> Result<Option<&'a [u8]>> {
-        Ok(self
-            .get_resp(vp_vcl, vp_task, name)?
-            .map(|r| r.headers.get(key).map(|h| h.as_ref()))
-            .unwrap_or(None))
+        // get the number of headers matching, and an iterator of them
+        let (n, mut all_headers) = match self.get_resp(vp_vcl, vp_task, name)? {
+            Err(_) => return Ok(None),
+            Ok(resp) => {
+                let mut n = 0;
+                for _ in resp.headers.get_all(key) {
+                    n += 1
+                }
+                (n, resp.headers.get_all(key).iter())
+            },
+        };
+
+        match (n, sep) {
+            (0, _) => Ok(None),
+            (_, None) => Ok(all_headers.next().map(HeaderValue::as_ref)),
+            (_, Some(s)) => {
+                let mut ws = ctx.ws.reserve();
+                for (i, h) in all_headers.enumerate() {
+                    if i != 0 {
+                        ws.buf.write(s.as_bytes())?;
+                    }
+                    ws.buf.write(h.as_ref())?;
+                }
+                Ok(Some(ws.release(0)))
+            }
+        }
     }
 
     pub fn body_as_string<'a>(

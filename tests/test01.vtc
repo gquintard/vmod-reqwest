@@ -2,7 +2,7 @@ varnishtest "some tests"
 
 server s1 {
 	rxreq
-	txresp -hdr "baz: qux" -body "9876543210"
+	txresp -hdr "baz: qux" -hdr "baz: another qux" -hdr "beep: boop" -body "9876543210"
 	expect req.url == "/my/url"
 	expect req.http.foo == "bar"
 	expect req.body == "0123456789"
@@ -34,7 +34,12 @@ varnish v1 -vcl+backend {
 		set resp.http.secure_error = client.error("secure");
 		set resp.http.faulty_status = client.status("faulty");
 		set resp.http.faulty_error = client.error("faulty");
-		set resp.http.s1_baz = client.header("s1", "baz");
+		set resp.http.s1_baz_0 = client.header("s1", "baz");
+		set resp.http.s1_baz_1 = client.header("s1", "baz", sep = ", ");
+		set resp.http.s1_baz_2 = client.header("s1", "baz", sep = " neat separator ");
+		set resp.http.s1_beep_0 = client.header("s1", "beep");
+		set resp.http.s1_beep_1 = client.header("s1", "beep", sep = ", ");
+		set resp.http.s1_beep_2 = client.header("s1", "beep", sep = " neat separator ");
 		set resp.http.s1_body = client.body_as_string("s1");
 	}
 } -start
@@ -46,7 +51,12 @@ client c1 {
 	expect resp.http.regular_status == 200
 	expect resp.http.faulty_status == 0
 	expect resp.http.faulty_error == "builder error: relative URL without a base"
-	expect resp.http.s1_baz == "qux"
+	expect resp.http.s1_baz_0 == "qux"
+	expect resp.http.s1_baz_1 == "qux, another qux"
+	expect resp.http.s1_baz_2 == "qux neat separator another qux"
+	expect resp.http.s1_beep_0 == "boop"
+	expect resp.http.s1_beep_1 == "boop"
+	expect resp.http.s1_beep_2 == "boop"
 	expect resp.http.s1_body == "9876543210"
 } -run
 

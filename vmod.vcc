@@ -75,9 +75,12 @@ $Method INT .status(PRIV_VCL, PRIV_TASK, STRING name)
 
 Retrieve the response status (send and wait if necessary), returns 0 if the reponse failed, but will cause a VCL errorif call on a non-existing request.
 
-$Method STRING .header(PRIV_VCL, PRIV_TASK, STRING name, STRING key)
+$Method STRING .header(PRIV_VCL, PRIV_TASK, STRING name, STRING key, [STRING sep])
 
 Retrieve the value of the first header named `key`, or returns NULL if it doesn't exist, or there was a transmission error.
+
+If `sep` is specified, all the headers named `key` are collected into a single string, using `sep` to separate each value.
+
 $Method STRING .body_as_string(PRIV_VCL, PRIV_TASK, STRING name)
 
 Retrieve the response body, returns an empty string in case of error.
