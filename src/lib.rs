@@ -58,7 +58,7 @@ impl<'a> Serve<BackendResp> for VCLBackend {
         "reqwest"
     }
 
-    fn get_headers(&self, ctx: &mut Ctx<'_>) -> varnish::vcl::Result<Option<BackendResp>> {
+    fn get_headers(&self, ctx: &mut Ctx<'_>) -> Result<Option<BackendResp>, Box<dyn std::error::Error>> {
         if !self.healthy(ctx).0 {
             return Err("unhealthy".into());
         }
@@ -172,7 +172,7 @@ impl<'a> Serve<BackendResp> for VCLBackend {
         beresp.set_status(resp.status as u16);
         beresp.set_proto("HTTP/1.1")?;
         for (k, v) in &resp.headers {
-            beresp.set_header(k.as_str(), v.to_str().map_err(|e| varnish::vcl::Error::from(e.to_string()))?)?;
+            beresp.set_header(k.as_str(), v.to_str()?)?;
         }
         Ok(Some(BackendResp {
             bytes: None,
@@ -297,7 +297,7 @@ struct BackendResp {
 }
 
 impl Transfer for BackendResp {
-    fn read(&mut self, mut buf: &mut [u8]) -> varnish::vcl::Result<usize> {
+    fn read(&mut self, mut buf: &mut [u8]) -> Result<usize, Box<dyn std::error::Error>> {
         let mut n = 0;
         loop {
             if self.bytes.is_none() && self.chan.is_some() {
