@@ -17,4 +17,4 @@ jobs:
         uses: docker/build-push-action@v3
         with:
           push: true
-          tags: ghcr.io/thomersch/varnish-vmod-reqwest:0.0.6
+          tags: ghcr.io/thomersch/varnish-vmod-reqwest:0.0.8
