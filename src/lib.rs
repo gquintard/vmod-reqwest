@@ -5,16 +5,16 @@ use bytes::Bytes;
 use std::boxed::Box;
 use std::io::Write;
 use std::os::raw::{c_uint, c_void};
-use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
+use reqwest::header::HeaderValue;
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedSender};
+use varnish::vcl::backend::{Backend, Serve, Transfer, VCLBackendPtr};
 use varnish::vcl::ctx::{log, Ctx, Event, LogTag};
 use varnish::vcl::probe;
 use varnish::vcl::probe::Probe;
-use varnish::vcl::processor::{PullResult, VFPCtx, VFP};
 use varnish::vcl::vpriv::VPriv;
 use varnish::vcl::vsb::Vsb;
 
@@ -42,32 +42,295 @@ macro_rules! send {
     };
 }
 
-macro_rules! maybe_fail {
-    ($ctx:expr, $e:expr) => {
-        match $e {
-            Ok(v) => v,
-            Err(e) => {
-                $ctx.fail(&e.to_string());
-                return -1;
-            }
-        }
-    };
-}
-
 static EMPTY_BODY: bytes::Bytes = bytes::Bytes::new();
 
-#[allow(non_camel_case_types)]
-#[derive(Debug, Clone)]
-struct client {
+struct VCLBackend {
     name: String,
+    bgt: *const BgThread,
     client: reqwest::Client,
-    be: *const varnish_sys::director,
+    probe_state: Option<ProbeState>,
     https: bool,
     base_url: Option<String>,
 }
 
-struct ProbeState<'a> {
-    spec: Probe<'a>,
+impl<'a> Serve<BackendResp> for VCLBackend {
+    fn get_type(&self) -> &str {
+        "reqwest"
+    }
+
+    fn get_headers(&self, ctx: &mut Ctx<'_>) -> Result<Option<BackendResp>, Box<dyn std::error::Error>> {
+        if !self.healthy(ctx).0 {
+            return Err("unhealthy".into());
+        }
+
+        let bereq = ctx.http_bereq.as_ref().unwrap();
+
+        let bereq_url = bereq.url().unwrap();
+
+        let url = if let Some(base_url) = &self.base_url {
+            // if the client has a base_url, prepend it to bereq.url
+            format!("{}{}", base_url, bereq_url)
+        } else if bereq_url.starts_with('/') {
+            // otherwise, if bereq.url looks like a path, try to find a host to build a full URL
+            if let Some(host) = bereq.header("host") {
+                format!(
+                    "{}://{}{}",
+                    if self.https { "https" } else { "http" },
+                    host,
+                    bereq_url
+                )
+            } else {
+                return Err("no host found (reqwest.client doesn't have a base_url, bereq.url doesn't specify a host and bereq.http.host is unset)".into());
+            }
+        } else {
+            // else use bereq.url as-is
+            bereq_url.to_string()
+        };
+
+        let (req_body_tx, body) = hyper::body::Body::channel();
+        let req = Request {
+            method: bereq.method().unwrap().to_string(),
+            url,
+            client: self.client.clone(),
+            body: ReqBody::Stream(body),
+            vcl: false,
+            headers: bereq
+                .into_iter()
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect(),
+        };
+
+        let mut resp_rx = unsafe { (*self.bgt).spawn_req(req) };
+
+        unsafe {
+            struct BodyChan<'a> {
+                chan: hyper::body::Sender,
+                rt: &'a tokio::runtime::Runtime,
+            }
+
+            unsafe extern "C" fn body_send_iterate(
+                priv_: *mut c_void,
+                _flush: c_uint,
+                ptr: *const c_void,
+                l: isize,
+                ) -> i32 {
+                let body_chan = (priv_ as *mut BodyChan).as_mut().unwrap();
+                let buf = std::slice::from_raw_parts(ptr as *const u8, l as usize);
+                let bytes = hyper::body::Bytes::copy_from_slice(buf);
+
+                body_chan
+                    .rt
+                    .block_on(async { body_chan.chan.send_data(bytes).await })
+                    .is_err()
+                    .into()
+            }
+
+            // manually dropped a few lines below
+            let bcp = Box::into_raw(Box::new(BodyChan {
+                chan: req_body_tx,
+                rt: &(*self.bgt).rt,
+            }));
+            let p = bcp as *mut c_void;
+            // mimicking V1F_SendReq in varnish-cache
+            let bo = (*ctx.raw).bo.as_mut().unwrap();
+
+            if !(*bo).bereq_body.is_null() {
+                varnish_sys::ObjIterate(bo.wrk, bo.bereq_body, p, Some(body_send_iterate), 0);
+            } else if !bo.req.is_null()
+                && (*bo.req).req_body_status != varnish_sys::BS_NONE.as_ptr()
+            {
+                let i = varnish_sys::VRB_Iterate(
+                    bo.wrk,
+                    bo.vsl.as_mut_ptr(),
+                    bo.req,
+                    Some(body_send_iterate),
+                    p,
+                );
+
+                if (*bo.req).req_body_status != varnish_sys::BS_CACHED.as_ptr() {
+                    bo.no_retry = "req.body not cached\0".as_ptr() as *const i8;
+                }
+
+                if (*bo.req).req_body_status == varnish_sys::BS_ERROR.as_ptr() {
+                    assert!(i < 0);
+                    (*bo.req).doclose = &varnish_sys::SC_RX_BODY[0];
+                }
+
+                if i < 0 {
+                    return Err("req.body read error".into());
+                }
+            }
+            // manually drop so reqwest knows there's no more body to push
+            drop(Box::from_raw(bcp));
+        }
+        let resp = match resp_rx.blocking_recv().unwrap() {
+            RespMsg::Hdrs(resp) => resp,
+            RespMsg::Err(e) => return Err(e.to_string().into()),
+            _ => unreachable!(),
+        };
+        let beresp = ctx.http_beresp.as_mut().unwrap();
+        beresp.set_status(resp.status as u16);
+        beresp.set_proto("HTTP/1.1")?;
+        for (k, v) in &resp.headers {
+            beresp.set_header(k.as_str(), v.to_str()?)?;
+        }
+        Ok(Some(BackendResp {
+            bytes: None,
+            cursor: 0,
+            chan: Some(resp_rx),
+            content_length: resp.content_length.map(|s| s as usize),
+        }))
+    }
+
+    fn event(&self, event: Event) {
+        // nothing to do
+        let probe_state = match self.probe_state {
+            None => return,
+            Some(ref probe_state) => probe_state,
+        };
+
+        // enter the runtime to
+        let _guard = unsafe { (*self.bgt).rt.enter() };
+        match event {
+            // start the probing loop
+            Event::Warm => {
+                spawn_probe(unsafe {&*self.bgt }, probe_state as *const ProbeState as *mut ProbeState, self.name.clone());
+            }
+            Event::Cold => {
+                // XXX: we should set the handle to None, be we don't have mutability, oh well...
+                probe_state.join_handle.as_ref().unwrap().abort();
+            }
+            _ => {}
+        }
+    }
+
+    fn healthy(&self, _ctx: &mut Ctx<'_>) -> (bool, SystemTime) {
+        let probe_state = match self.probe_state {
+            None => return (true, SystemTime::UNIX_EPOCH),
+            Some(ref ps) => ps,
+        };
+
+        assert!(probe_state.spec.window <= 64);
+
+        let bitmap = probe_state.history.load(Ordering::Relaxed);
+        (
+            is_healthy(bitmap, probe_state.spec.window, probe_state.spec.threshold),
+            probe_state.health_changed,
+        )
+    }
+
+    fn list(&self, ctx: &mut Ctx<'_>, vsb: &mut Vsb<'_>, detailed: bool, json: bool) {
+        if self.probe_state.is_none() {
+            return self.list_without_probe(ctx, vsb, detailed, json);
+        }
+        let ProbeState {
+            history,
+            avg,
+            spec: Probe {
+                window, threshold, ..
+            },
+            ..
+        } = self.probe_state.as_ref().unwrap();
+        let bitmap = history.load(Ordering::Relaxed);
+        let window = *window;
+        let threshold = *threshold;
+        let health_str = if is_healthy(bitmap, window, threshold) {
+            "healthy"
+        } else {
+            "sick"
+        };
+        let msg = match (json, detailed) {
+            // json, no details
+            (true, false) => {
+                format!(
+                    "[{}, {}, \"{}\"]",
+                    good_probes(bitmap, window),
+                    window,
+                    health_str,
+                )
+            }
+            // json, details
+            (true, true) => {
+                // TODO: talk to upstream, we shouldn't have to add the colon
+                serde_json::to_string(&self.probe_state.as_ref().unwrap().spec)
+                    .as_ref()
+                    .unwrap()
+                    .to_owned()
+                    + ",\n"
+            }
+            // no json, no details
+            (false, false) => {
+                format!("{}/{}\t{}", good_probes(bitmap, window), window, health_str)
+            }
+            // no json, details
+            (false, true) => {
+                let mut s = format!(
+                    "
+ Current states  good: {:2} threshold: {:2} window: {:2}
+  Average response time of good probes: {:.06}
+  Oldest ================================================== Newest
+  ",
+                    good_probes(bitmap, window),
+                    threshold,
+                    window,
+                    avg.lock().unwrap()
+                );
+                for i in 0..64 {
+                    s += if bitmap.wrapping_shr(63 - i) & 1 == 1 {
+                        "H"
+                    } else {
+                        "-"
+                    };
+                }
+                s
+            },
+        };
+        vsb.cat(&msg).unwrap();
+    }
+}
+
+struct BackendResp {
+    chan: Option<Receiver<RespMsg>>,
+    bytes: Option<Bytes>,
+    cursor: usize,
+    content_length: Option<usize>,
+}
+
+impl Transfer for BackendResp {
+    fn read(&mut self, mut buf: &mut [u8]) -> Result<usize, Box<dyn std::error::Error>> {
+        let mut n = 0;
+        loop {
+            if self.bytes.is_none() && self.chan.is_some() {
+                match self.chan.as_mut().unwrap().blocking_recv() {
+                    Some(RespMsg::Hdrs(_)) => panic!("invalid message type: RespMsg::Hdrs"),
+                    Some(RespMsg::Chunk(bytes)) => {
+                        self.bytes = Some(bytes);
+                        self.cursor = 0
+                    }
+                    Some(RespMsg::Err(e)) => return Err(e.to_string().into()),
+                    None => return Ok(n),
+                };
+            }
+
+            let pull_buf = self.bytes.as_ref().unwrap();
+            let to_write = &pull_buf[self.cursor..];
+            let used = buf.write(to_write).unwrap();
+            self.cursor += used;
+            n += used;
+            assert!(self.cursor <= pull_buf.len());
+            if self.cursor == pull_buf.len() {
+                self.bytes = None;
+            }
+        }
+    }
+
+    fn len(&self) -> Option<usize> {
+        self.content_length
+    }
+}
+
+struct ProbeState {
+    spec: Probe,
     history: AtomicU64,
     health_changed: std::time::SystemTime,
     url: reqwest::Url,
@@ -75,47 +338,19 @@ struct ProbeState<'a> {
     avg: Mutex<f64>,
 }
 
-struct VCLBackend<'a> {
-    bgt: &'a BgThread,
-    client: Box<client>,
-    probe_state: Option<ProbeState<'a>>,
-}
-
-const METHODS: varnish_sys::vdi_methods = varnish_sys::vdi_methods {
-    magic: varnish_sys::VDI_METHODS_MAGIC,
-    type_: "reqwest\0".as_ptr() as *const std::os::raw::c_char,
-    gethdrs: Some(be_gethdrs),
-    finish: Some(be_finish),
-    destroy: None,
-    event: Some(be_event),
-    getip: None,
-    healthy: Some(be_healthy),
-    http1pipe: None,
-    list: Some(be_list),
-    panic: None,
-    resolve: None,
-};
-const METHODS_WITH_PROBE: *const varnish_sys::vdi_methods =
-    &varnish_sys::vdi_methods { ..METHODS } as *const varnish_sys::vdi_methods;
-
-const METHODS_WITHOUT_PROBE: *const varnish_sys::vdi_methods = &varnish_sys::vdi_methods {
-    list: None,
-    ..METHODS
-} as *const varnish_sys::vdi_methods;
-
-fn build_probe_state<'a>(mut probe: Probe<'a>, base_url: Option<&str>) -> Result<ProbeState<'a>> {
+fn build_probe_state(mut probe: Probe, base_url: Option<&str>) -> Result<ProbeState> {
     // sanitize probe (see vbp_set_defaults in Varnish Cache)
     if probe.timeout.is_zero() {
         probe.timeout = Duration::from_secs(2);
     }
     if probe.interval.is_zero() {
-        probe.timeout = Duration::from_secs(5);
+        probe.interval = Duration::from_secs(5);
     }
     if probe.window == 0 {
         probe.window = 8;
     }
     if probe.threshold == 0 {
-        probe.window = 3;
+        probe.threshold = 3;
     }
     if probe.exp_status == 0 {
         probe.exp_status = 200;
@@ -144,6 +379,12 @@ fn build_probe_state<'a>(mut probe: Probe<'a>, base_url: Option<&str>) -> Result
         url,
         avg: Mutex::new(0_f64),
     })
+}
+
+#[allow(non_camel_case_types)]
+struct client {
+    name: String,
+    be: Backend<VCLBackend, BackendResp>,
 }
 
 impl client {
@@ -203,39 +444,30 @@ impl client {
                 vcl_name
             );
         }
-        let mut client = Box::new(client {
-            name: vcl_name.to_owned(),
-            client: reqwest_client,
-            https: https.unwrap_or(false),
-            be: std::ptr::null(),
-            base_url: base_url.map(|s| s.into()),
-        });
 
-        let (probe_state, methods) = match probe {
-            Some(spec) => (
-                Some(
-                    build_probe_state(spec, client.base_url.as_deref())
-                        .with_context(|| format!("reqwest: failed to add probe to {}", vcl_name))?,
-                ),
-                METHODS_WITH_PROBE,
-            ),
-            None => (None, METHODS_WITHOUT_PROBE),
+        let probe_state = match probe {
+            Some(spec) => Some(build_probe_state(spec, base_url)
+                        .with_context(|| format!("reqwest: failed to add probe to {}", vcl_name))?),
+            None => None,
         };
-        let backend_p = Box::into_raw(Box::new(VCLBackend {
-            bgt: vp_vcl.as_ref().unwrap(),
-            client: client.clone(),
-            probe_state,
-        })) as *mut VCLBackend;
-        client.be = unsafe {
-            varnish_sys::VRT_AddDirector(
-                ctx.raw,
-                methods,
-                backend_p as *mut std::ffi::c_void,
-                format!("{}\0", vcl_name).as_ptr() as *const i8,
-            )
+        let has_probe = probe_state.is_some();
+
+        let be = Backend::new(ctx,
+                              vcl_name,
+                              VCLBackend{
+                                  name: vcl_name.to_string(),
+                                  bgt: vp_vcl.as_ref().unwrap(),
+                                  client: reqwest_client,
+                                  probe_state,
+                                  https: https.unwrap_or(false),
+                                  base_url: base_url.map(|s| s.into()),
+                              },
+                              has_probe)?;
+        let client = client {
+            name: vcl_name.to_owned(),
+            be,
         };
-        assert!(!client.be.is_null());
-        Ok(*client)
+        Ok(client)
     }
 
     pub fn init(
@@ -256,7 +488,7 @@ impl client {
             url: url.into(),
             headers: Vec::new(),
             body: ReqBody::None,
-            client: self.client.clone(),
+            client: self.be.get_inner().client.clone(),
             vcl: true,
         });
 
@@ -386,16 +618,39 @@ impl client {
 
     pub fn header<'a>(
         &mut self,
-        _ctx: &Ctx,
+        ctx: &mut Ctx<'a>,
         vp_vcl: &mut VPriv<BgThread>,
         vp_task: &'a mut VPriv<Vec<Entry>>,
         name: &str,
         key: &str,
+        sep: Option<&str>,
     ) -> Result<Option<&'a [u8]>> {
-        Ok(self
-            .get_resp(vp_vcl, vp_task, name)?
-            .map(|r| r.headers.get(key).map(|h| h.as_ref()))
-            .unwrap_or(None))
+        // get the number of headers matching, and an iterator of them
+        let (n, mut all_headers) = match self.get_resp(vp_vcl, vp_task, name)? {
+            Err(_) => return Ok(None),
+            Ok(resp) => {
+                let mut n = 0;
+                for _ in resp.headers.get_all(key) {
+                    n += 1
+                }
+                (n, resp.headers.get_all(key).iter())
+            },
+        };
+
+        match (n, sep) {
+            (0, _) => Ok(None),
+            (_, None) => Ok(all_headers.next().map(HeaderValue::as_ref)),
+            (_, Some(s)) => {
+                let mut ws = ctx.ws.reserve();
+                for (i, h) in all_headers.enumerate() {
+                    if i != 0 {
+                        ws.buf.write(s.as_bytes())?;
+                    }
+                    ws.buf.write(h.as_ref())?;
+                }
+                Ok(Some(ws.release(0)))
+            }
+        }
     }
 
     pub fn body_as_string<'a>(
@@ -424,8 +679,8 @@ impl client {
         }
     }
 
-    pub fn backend(&self, _ctx: &Ctx) -> *const varnish_sys::director {
-        self.be
+    pub fn backend(&self, _ctx: &Ctx) -> VCLBackendPtr {
+        self.be.vcl_ptr()
     }
 }
 
@@ -569,226 +824,6 @@ async fn process_req(req: Request, tx: Sender<RespMsg>) {
     }
 }
 
-struct BackendResp {
-    chan: Option<Receiver<RespMsg>>,
-    bytes: Option<Bytes>,
-    cursor: usize,
-}
-
-impl VFP for BackendResp {
-    fn pull(&mut self, _ctx: &mut VFPCtx, mut buf: &mut [u8]) -> PullResult {
-        let mut n = 0;
-        loop {
-            if buf.is_empty() {
-                return PullResult::Ok(n);
-            }
-
-            if self.bytes.is_none() && self.chan.is_some() {
-                match self.chan.as_mut().unwrap().blocking_recv() {
-                    Some(RespMsg::Hdrs(_)) => panic!("invalid message type: RespMsg::Hdrs"),
-                    Some(RespMsg::Chunk(bytes)) => {
-                        self.bytes = Some(bytes);
-                        self.cursor = 0
-                    }
-                    Some(RespMsg::Err(_)) => return PullResult::Err,
-                    None => return PullResult::End(n),
-                };
-            }
-
-            let pull_buf = self.bytes.as_ref().unwrap();
-            let to_write = &pull_buf[self.cursor..];
-            let _n = buf.write(to_write).unwrap();
-            self.cursor += _n;
-            n += _n;
-            assert!(self.cursor <= pull_buf.len());
-            if self.cursor == pull_buf.len() {
-                self.bytes = None;
-            }
-        }
-    }
-}
-
-unsafe impl Sync for VfpWrapper {}
-struct VfpWrapper {
-    vfp: varnish_sys::vfp,
-}
-
-static REQWEST_VFP: VfpWrapper = VfpWrapper {
-    vfp: varnish_sys::vfp {
-        name: "reqwest\0".as_ptr() as *const i8,
-        init: None,
-        pull: Some(varnish::vcl::processor::wrap_vfp_pull::<BackendResp>),
-        fini: Some(varnish::vcl::processor::wrap_vfp_fini::<BackendResp>),
-        priv1: ptr::null(),
-    },
-};
-
-struct BodyChan<'a> {
-    chan: hyper::body::Sender,
-    rt: &'a tokio::runtime::Runtime,
-}
-
-unsafe extern "C" fn body_send_iterate(
-    priv_: *mut c_void,
-    _flush: c_uint,
-    ptr: *const c_void,
-    l: varnish_sys::ssize_t,
-) -> i32 {
-    let body_chan = (priv_ as *mut BodyChan).as_mut().unwrap();
-    let buf = std::slice::from_raw_parts(ptr as *const u8, l as usize);
-    let bytes = hyper::body::Bytes::copy_from_slice(buf);
-
-    body_chan
-        .rt
-        .block_on(async { body_chan.chan.send_data(bytes).await })
-        .is_err().into()
-}
-
-unsafe extern "C" fn be_gethdrs(
-    ctxp: *const varnish_sys::vrt_ctx,
-    be: varnish_sys::VCL_BACKEND,
-) -> ::std::os::raw::c_int {
-    let VCLBackend { bgt, client, .. } = ((*be).priv_ as *const VCLBackend).as_ref().unwrap();
-    let mut ctx = Ctx::new(ctxp as *mut varnish_sys::vrt_ctx);
-
-    if be_healthy(ctxp, be, ptr::null_mut()) != 1 {
-        ctx.log(
-            varnish::vcl::ctx::LogTag::FetchError,
-            &format!("backend {}: unhealthy", &client.name),
-        );
-        return -1;
-    }
-
-    let bereq = ctx.http_bereq.as_ref().unwrap();
-
-    let bereq_url = bereq.url().unwrap();
-
-    let url = if let Some(base_url) = &client.base_url {
-        // if the client has a base_url, prepend it to bereq.url
-        format!("{}{}", base_url, bereq_url)
-    } else if bereq_url.starts_with('/') {
-        // otherwise, if bereq.url looks like a path, try to find a host to build a full URL
-        if let Some(host) = bereq.header("host") {
-            format!(
-                "{}://{}{}",
-                if client.https { "https" } else { "http" },
-                host,
-                bereq_url
-            )
-        } else {
-            ctx.log(LogTag::Error, "no host found (reqwest.client doesn't have a base_url, bereq.url doesn't specify a host and bereq.http.host is unset)");
-            return 1;
-        }
-    } else {
-        // else use bereq.url as-is
-        bereq_url.to_string()
-    };
-
-    let (req_body_tx, body) = hyper::body::Body::channel();
-    let req = Request {
-        method: bereq.method().unwrap().to_string(),
-        url,
-        client: client.client.clone(),
-        body: ReqBody::Stream(body),
-        vcl: false,
-        headers: bereq
-            .into_iter()
-            .map(|(k, v)| (k.into(), v.into()))
-            .collect(),
-    };
-
-    let mut resp_rx = bgt.spawn_req(req);
-
-    // manually dropped a few lines below
-    let bcp = Box::into_raw(Box::new(BodyChan {
-        chan: req_body_tx,
-        rt: &bgt.rt,
-    }));
-    let p = bcp as *mut c_void;
-    // mimicking V1F_SendReq in varnish-cache
-    let bo = (*ctx.raw).bo.as_mut().unwrap();
-    if !(*bo).bereq_body.is_null() {
-        varnish_sys::ObjIterate(bo.wrk, bo.bereq_body, p, Some(body_send_iterate), 0);
-    } else if !bo.req.is_null() && (*bo.req).req_body_status != varnish_sys::BS_NONE.as_ptr() {
-        let i = varnish_sys::VRB_Iterate(
-            bo.wrk,
-            bo.vsl.as_mut_ptr(),
-            bo.req,
-            Some(body_send_iterate),
-            p,
-        );
-
-        if (*bo.req).req_body_status != varnish_sys::BS_CACHED.as_ptr() {
-            bo.no_retry = "req.body not cached\0".as_ptr() as *const i8;
-        }
-
-        if (*bo.req).req_body_status == varnish_sys::BS_ERROR.as_ptr() {
-            assert!(i < 0);
-            (*bo.req).doclose = &varnish_sys::SC_RX_BODY[0];
-        }
-    }
-    // manually drop so reqwest knows there's no more body to push
-    drop(Box::from_raw(bcp));
-
-    let resp = match resp_rx.blocking_recv().unwrap() {
-        RespMsg::Hdrs(resp) => resp,
-        RespMsg::Err(e) => {
-            ctx.fail(&e.to_string());
-            return -1;
-        },
-        _ => unreachable!(),
-    };
-    let beresp = ctx.http_beresp.as_mut().unwrap();
-    beresp.set_status(resp.status as u16);
-    maybe_fail!(ctx, beresp.set_proto("HTTP/1.1"));
-    for (k, v) in &resp.headers {
-        maybe_fail!(
-            ctx,
-            beresp.set_header(k.as_str(), maybe_fail!(ctx, v.to_str()))
-        );
-    }
-    bo.htc = varnish_sys::WS_Alloc(
-        bo.ws.as_mut_ptr(),
-        std::mem::size_of::<varnish_sys::http_conn>() as u32,
-    ) as *mut varnish_sys::http_conn;
-    if bo.htc.is_null() {
-        ctx.fail("reqwest: insuficient workspace");
-        return -1;
-    }
-    let htc = bo.htc.as_mut().unwrap();
-    htc.magic = varnish_sys::HTTP_CONN_MAGIC;
-    match resp.content_length {
-        None => {
-            htc.body_status = varnish_sys::BS_CHUNKED.as_ptr();
-            htc.content_length = -1;
-        },
-        Some(cl) => {
-            htc.body_status = if cl == 0 {
-                varnish_sys::BS_NONE.as_ptr()
-            } else {
-                varnish_sys::BS_LENGTH.as_ptr()
-            };
-            htc.content_length = cl as i64;
-        },
-    }
-    htc.doclose = &varnish_sys::SC_REM_CLOSE[0];
-
-    let vfe = varnish_sys::VFP_Push(bo.vfc, &REQWEST_VFP.vfp);
-    if vfe.is_null() {
-        -1
-    } else {
-        let brm = BackendResp {
-            bytes: None,
-            cursor: 0,
-            chan: Some(resp_rx),
-        };
-        // dropped by wrap_vfp_fini from VfpWrapper
-        let respp = Box::into_raw(Box::new(brm));
-        (*vfe).priv1 = respp as *mut std::ffi::c_void;
-        0
-    }
-}
-
 fn good_probes(bitmap: u64, window: u32) -> u32 {
     bitmap.wrapping_shl(64_u32 - window).count_ones()
 }
@@ -810,9 +845,10 @@ fn update_health(
     (bitmap, new_health, new_health == old_health)
 }
 
-// cheating hard with the 'static lifetime, but the be_event function will stop us
+// cheating hard with the pointer here, but the be_event function will stop us
 // before the references are invalid
-fn spawn_probe(bgt: &'static BgThread, probe_state: &'static mut ProbeState, name: String) {
+fn spawn_probe(bgt: &'static BgThread, probe_statep: *mut ProbeState, name: String) {
+    let probe_state = unsafe { probe_statep.as_mut().unwrap() };
     let spec = probe_state.spec.clone();
     let url = probe_state.url.clone();
     let history = &probe_state.history;
@@ -889,140 +925,6 @@ fn spawn_probe(bgt: &'static BgThread, probe_state: &'static mut ProbeState, nam
     }));
 }
 
-unsafe extern "C" fn be_event(be: varnish_sys::VCL_BACKEND, e: varnish_sys::vcl_event_e) {
-    let event = Event::new(e);
-    let VCLBackend {
-        probe_state,
-        bgt,
-        client,
-        ..
-    } = ((*be).priv_ as *mut VCLBackend).as_mut().unwrap();
-
-    // nothing to do
-    let mut probe_state = match probe_state {
-        None => return,
-        Some(ref mut probe_state) => probe_state,
-    };
-
-    // enter the runtime to
-    let _guard = bgt.rt.enter();
-    match event {
-        // start the probing loop
-        Event::Warm => {
-            spawn_probe(bgt, probe_state, client.name.clone());
-        }
-        Event::Cold => {
-            probe_state.join_handle.as_ref().unwrap().abort();
-            probe_state.join_handle = None;
-        }
-        _ => {}
-    }
-}
-
-unsafe extern "C" fn be_healthy(
-    _ctx: *const varnish_sys::vrt_ctx,
-    be: varnish_sys::VCL_BACKEND,
-    changed: *mut varnish_sys::VCL_TIME,
-) -> varnish_sys::VCL_BOOL {
-    let VCLBackend { probe_state, .. } = ((*be).priv_ as *const VCLBackend).as_ref().unwrap();
-
-    let probe_state = match probe_state {
-        None => return 1,
-        Some(ps) => ps,
-    };
-    if !changed.is_null() {
-        *changed = probe_state
-            .health_changed
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs_f64();
-    }
-
-    assert!(probe_state.spec.window <= 64);
-
-    let bitmap = probe_state.history.load(Ordering::Relaxed);
-    is_healthy(bitmap, probe_state.spec.window, probe_state.spec.threshold).into()
-}
-
-unsafe extern "C" fn be_finish(ctx: *const varnish_sys::vrt_ctx, _arg1: varnish_sys::VCL_BACKEND) {
-    (*(*ctx).bo).htc = ptr::null_mut();
-}
-
-unsafe extern "C" fn be_list(
-    _ctxp: *const varnish_sys::vrt_ctx,
-    be: varnish_sys::VCL_BACKEND,
-    vsbp: *mut varnish_sys::vsb,
-    pflag: ::std::os::raw::c_int,
-    jflag: ::std::os::raw::c_int,
-) {
-    let mut vsb = Vsb::new(vsbp);
-    let VCLBackend { probe_state, .. } = ((*be).priv_ as *const VCLBackend).as_ref().unwrap();
-
-    let ProbeState {
-        history,
-        avg,
-        spec: Probe {
-            window, threshold, ..
-        },
-        ..
-    } = probe_state.as_ref().unwrap();
-    let bitmap = history.load(Ordering::Relaxed);
-    let window = *window;
-    let threshold = *threshold;
-    let health_str = if is_healthy(bitmap, window, threshold) {
-        "healthy"
-    } else {
-        "sick"
-    };
-    let msg = match (jflag, pflag) {
-        // json, no details
-        (1, 0) => {
-            format!(
-                "[{}, {}, \"{}\"]",
-                good_probes(bitmap, window).count_ones(),
-                window,
-                health_str
-            )
-        }
-        // json, details
-        (1, 1) => {
-            // TODO: talk to upstream, we shouldn't have to add the colon
-            serde_json::to_string(&probe_state.as_ref().unwrap().spec)
-                .as_ref()
-                .unwrap()
-                .to_owned()
-                + ",\n"
-        }
-        // no json, no details
-        (0, 0) => {
-            format!("{}/{}\t{}", good_probes(bitmap, window), window, health_str)
-        }
-        // no json, details
-        (0, 1) => {
-            let mut s = format!(
-                "
- Current states  good: {:2} threshold: {:2} window: {:2}
-  Average response time of good probes: {:.06}
-  Oldest ================================================== Newest
-  ",
-                good_probes(bitmap, window),
-                threshold,
-                window,
-                avg.lock().unwrap()
-            );
-            for i in 0..64 {
-                s += if bitmap.wrapping_shr(63 - i) & 1 == 1 {
-                    "H"
-                } else {
-                    "-"
-                };
-            }
-            s
-        }
-        (_, _) => unreachable!(),
-    };
-    vsb.cat(&msg).unwrap();
-}
 pub(crate) unsafe fn event(_ctx: &Ctx, vp: &mut VPriv<BgThread>, event: Event) -> Result<()> {
     // we only need to worry about Load, BgThread will be destroyed with the VPriv when the VCL is
     // discarded

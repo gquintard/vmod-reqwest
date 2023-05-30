@@ -1,4 +1,4 @@
-FROM rust:1.61-buster
+FROM rust:1.67-buster
 
 WORKDIR /vmod_reqwest
 ARG VMOD_REQWEST_VERSION=0.0.6
