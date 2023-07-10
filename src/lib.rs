@@ -629,12 +629,9 @@ impl client {
         let (n, mut all_headers) = match self.get_resp(vp_vcl, vp_task, name)? {
             Err(_) => return Ok(None),
             Ok(resp) => {
-                let mut n = 0;
-                for _ in resp.headers.get_all(key) {
-                    n += 1
-                }
-                (n, resp.headers.get_all(key).iter())
-            },
+                let keys = resp.headers.get_all(key);
+                (keys.iter().count(), keys.iter())
+            }
         };
 
         match (n, sep) {
@@ -644,8 +641,9 @@ impl client {
                 let mut ws = ctx.ws.reserve();
                 for (i, h) in all_headers.enumerate() {
                     if i != 0 {
-                        ws.buf.write(s.as_bytes())?;
+                        ws.buf.write(s.as_ref())?;
                     }
+
                     ws.buf.write(h.as_ref())?;
                 }
                 Ok(Some(ws.release(0)))
