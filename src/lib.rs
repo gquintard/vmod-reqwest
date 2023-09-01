@@ -29,6 +29,7 @@ varnish::vtc!(test08);
 varnish::vtc!(test09);
 varnish::vtc!(test10);
 varnish::vtc!(test11);
+varnish::vtc!(test12);
 
 macro_rules! init_err {
     ($n:ident) => {
@@ -603,6 +604,26 @@ impl client {
         }
     }
 
+    pub fn copy_headers_to_req(
+        &mut self,
+        ctx: &Ctx,
+        vp_task: &mut VPriv<Vec<Entry>>,
+        name: &str,
+    ) -> Result<()> {
+        let req = match self.get_transaction(vp_task, name)? {
+            VclTransaction::Req(req) => req,
+            _ => { return Err(init_err!(name)) },
+        };
+        // XXX: we'll always have one of those, but maybe people would want
+        // `req_top`, or even `bereq` while in `vcl_pipe`?
+        let vcl_req = ctx.http_req.as_ref().or(ctx.http_bereq.as_ref()).unwrap();
+
+        for hdr in vcl_req {
+            req.headers.push((hdr.0.into(), hdr.1.into()));
+        }
+
+        Ok(())
+    }
     pub fn status(
         &mut self,
         _ctx: &Ctx,
