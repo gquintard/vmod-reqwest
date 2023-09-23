@@ -1,15 +1,15 @@
 [package]
 name = "vmod_reqwest"
-version = "0.0.9"
+version = "0.0.10"
 edition = "2021"
 license = "BSD-3-Clause"
 
 [build-dependencies]
-varnish = "0.0.16"
+varnish = "0.0.17"
 
 [dependencies]
-varnish = "0.0.16"
-varnish-sys = "0.0.16"
+varnish = "0.0.17"
+varnish-sys = "0.0.17"
 regex = "1.5"
 lru = "0.7.1"
 bytes = "1.1.0"

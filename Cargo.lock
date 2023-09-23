@@ -1248,9 +1248,9 @@ dependencies = [
 
 [[package]]
 name = "varnish"
-version = "0.0.16"
+version = "0.0.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "952e2fa0572fcf5902951116c6795940fd86d04dc2ef49a446a164100caabc2b"
+checksum = "578e9107cc7ea647a4c1fc427e656b84f45556813ddc7f60275f816f3568ddaf"
 dependencies = [
  "pkg-config",
  "serde",
@@ -1259,9 +1259,9 @@ dependencies = [
 
 [[package]]
 name = "varnish-sys"
-version = "0.0.16"
+version = "0.0.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19c59ac8da23b7f0a49290e14e3e975fcac3db450304dd3c7fe4c9d2fa61a419"
+checksum = "fe1212594ae5d8e6a4351dc00e8e75b85d8fc97b8cd40652eeeda63a6294940b"
 dependencies = [
  "bindgen",
  "pkg-config",
