@@ -1,8 +1,9 @@
-FROM rust:1.67-buster
+FROM rust:1.73-buster
 
 WORKDIR /vmod_reqwest
 ARG VMOD_REQWEST_VERSION=0.0.6
 ARG RELEASE_URL=https://github.com/gquintard/vmod_reqwest/archive/refs/tags/v${VMOD_REQWEST_VERSION}.tar.gz
+ENV CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
 
 RUN curl -s https://packagecloud.io/install/repositories/varnishcache/varnish72/script.deb.sh | bash && apt-get update && apt-get install -y varnish-dev clang libssl-dev
 
