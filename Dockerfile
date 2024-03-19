@@ -3,12 +3,12 @@
 FROM rust:1.73-bookworm
 
 WORKDIR /vmod_reqwest
-ARG VMOD_REQWEST_VERSION=0.0.10
+ARG VMOD_REQWEST_VERSION=0.0.11
 ARG RELEASE_URL=https://github.com/gquintard/vmod_reqwest/archive/refs/tags/v${VMOD_REQWEST_VERSION}.tar.gz
 ENV CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
 
 RUN set -e; \
-	curl -s https://packagecloud.io/install/repositories/varnishcache/varnish74/script.deb.sh | bash; \
+	curl -s https://packagecloud.io/install/repositories/varnishcache/varnish75/script.deb.sh | bash; \
 	apt-get install -y varnish-dev clang libssl-dev; \
 	curl -Lo dist.tar.gz ${RELEASE_URL}; \
 	tar xavf dist.tar.gz --strip-components=1; \
