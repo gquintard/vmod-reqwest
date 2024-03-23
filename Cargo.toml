@@ -6,11 +6,11 @@ license = "BSD-3-Clause"
 authors = [ "Guillaume Quintard guillaume.quintard@gmail.com" ]
 
 [build-dependencies]
-varnish = "0.0.18"
+varnish = "0.0.19"
 
 [dependencies]
-varnish = "0.0.18"
-varnish-sys = "0.0.18"
+varnish = "0.0.19"
+varnish-sys = "0.0.19"
 regex = "1.5"
 lru = "0.7.1"
 bytes = "1.1.0"
