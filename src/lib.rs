@@ -4,7 +4,7 @@ use anyhow::{anyhow, bail, Context, Error, Result};
 use bytes::Bytes;
 use std::boxed::Box;
 use std::io::Write;
-use std::os::raw::{c_uint, c_void};
+use std::os::raw::{c_char, c_uint, c_void};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
@@ -149,7 +149,7 @@ impl<'a> Serve<BackendResp> for VCLBackend {
                 );
 
                 if (*bo.req).req_body_status != varnish_sys::BS_CACHED.as_ptr() {
-                    bo.no_retry = "req.body not cached\0".as_ptr() as *const i8;
+                    bo.no_retry = "req.body not cached\0".as_ptr() as *const c_char;
                 }
 
                 if (*bo.req).req_body_status == varnish_sys::BS_ERROR.as_ptr() {
