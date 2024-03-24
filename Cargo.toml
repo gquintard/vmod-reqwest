@@ -1,6 +1,6 @@
 [package]
 name = "vmod_reqwest"
-version = "0.0.11"
+version = "0.0.12"
 edition = "2021"
 license = "BSD-3-Clause"
 authors = [ "Guillaume Quintard guillaume.quintard@gmail.com" ]
