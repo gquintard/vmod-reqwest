@@ -1,6 +1,6 @@
 # Maintainer: Guillaume Quintard <guillaume.quintard@gmail.com>
 
-pkgname=vmod_reqwest
+pkgname=vmod-reqwest
 pkgver=@VMOD_VERSION@
 pkgrel=1
 pkgdesc="Dynamic backends for Varnish"
