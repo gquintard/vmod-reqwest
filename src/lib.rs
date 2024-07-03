@@ -39,7 +39,9 @@ macro_rules! init_err {
 
 macro_rules! send {
     ($tx:ident, $payload:expr) => {
-        $tx.send($payload).await.unwrap()
+        if $tx.send($payload).await.is_err() {
+            return;
+        }
     };
 }
 
