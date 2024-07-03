@@ -117,6 +117,11 @@ impl<'a> Serve<BackendResp> for VCLBackend {
                 ptr: *const c_void,
                 l: isize,
                 ) -> i32 {
+
+                // nothing to do
+                if ptr.is_null() || l == 0 {
+                    return 0;
+                }
                 let body_chan = (priv_ as *mut BodyChan).as_mut().unwrap();
                 let buf = std::slice::from_raw_parts(ptr as *const u8, l as usize);
                 let bytes = hyper::body::Bytes::copy_from_slice(buf);
