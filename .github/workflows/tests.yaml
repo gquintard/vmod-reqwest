@@ -13,6 +13,7 @@ jobs:
           curl -s https://packagecloud.io/install/repositories/varnishcache/varnish75/script.deb.sh | sudo bash
           sudo apt-get install varnish-dev
       - run: |
+          export RUST_BACKTRACE=1
           cargo doc
           cargo build
           cargo test
