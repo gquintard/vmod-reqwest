@@ -14,7 +14,7 @@ RUN set -e; \
 	tar xavf dist.tar.gz --strip-components=1; \
 	cargo build --release
 
-FROM varnish:7.4
+FROM varnish:7.5
 USER root
 RUN set -e; \
 	apt-get update; \
