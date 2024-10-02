@@ -6,11 +6,12 @@ license = "BSD-3-Clause"
 authors = [ "Guillaume Quintard guillaume.quintard@gmail.com" ]
 
 [build-dependencies]
-varnish = "0.0.19"
+varnish = { git = "https://github.com/gquintard/varnish-rs.git", branch = "proc-macro-cleanup-gq"}
 
 [dependencies]
-varnish = "0.0.19"
-varnish-sys = "0.0.19"
+varnish = { git = "https://github.com/gquintard/varnish-rs.git", branch = "proc-macro-cleanup-gq"}
+varnish-sys = { git = "https://github.com/gquintard/varnish-rs.git", branch = "proc-macro-cleanup-gq"}
+varnish-macros = { git = "https://github.com/gquintard/varnish-rs.git", branch = "proc-macro-cleanup-gq" }
 regex = "1.5"
 lru = "0.7.1"
 bytes = "1.1.0"
