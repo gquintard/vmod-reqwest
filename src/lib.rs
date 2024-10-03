@@ -8,9 +8,9 @@ mod reqwest {
 
     use reqwest::header::HeaderValue;
     use tokio::sync::mpsc::Sender;
+    use varnish::vcl::Backend;
     use varnish::vcl::Probe;
     use varnish::vcl::{Ctx, Event};
-    use varnish::vcl::Backend;
 
     // FIXME: needed for header()
     use varnish::ffi::{VCL_BACKEND, VCL_STRING};
@@ -57,28 +57,36 @@ mod reqwest {
                 rcb = rcb.connect_timeout(t);
             }
             if let Some(proxy) = http_proxy {
-                rcb = rcb.proxy(reqwest::Proxy::https(proxy).map_err(|e| VclError::new(format!("reqwest: couldn't initialize {vcl_name}'s HTTP proxy ({e})")))?);
+                rcb = rcb.proxy(reqwest::Proxy::https(proxy).map_err(|e| {
+                    VclError::new(format!(
+                        "reqwest: couldn't initialize {vcl_name}'s HTTP proxy ({e})"
+                    ))
+                })?);
             }
             if let Some(proxy) = https_proxy {
-                rcb = rcb.proxy(reqwest::Proxy::https(proxy).map_err(|e| VclError::new(format!("reqwest: couldn't initialize {vcl_name}'s HTTPS proxy ({e})")))?);
+                rcb = rcb.proxy(reqwest::Proxy::https(proxy).map_err(|e| {
+                    VclError::new(format!(
+                        "reqwest: couldn't initialize {vcl_name}'s HTTPS proxy ({e})"
+                    ))
+                })?);
             }
             if follow <= 0 {
                 rcb = rcb.redirect(reqwest::redirect::Policy::none());
             } else {
                 rcb = rcb.redirect(reqwest::redirect::Policy::limited(follow as usize));
             }
-            let reqwest_client = rcb
-                .build()
-                .map_err(|e| VclError::new(format!("reqwest: couldn't initialize {vcl_name} ({e})")))?;
+            let reqwest_client = rcb.build().map_err(|e| {
+                VclError::new(format!("reqwest: couldn't initialize {vcl_name} ({e})"))
+            })?;
 
             if https.is_some() && base_url.is_some() {
                 return Err(VclError::new(format!("reqwest: couldn't initialize {vcl_name}: can't take both an https and a base_url argument")));
             }
 
             let probe_state = match probe {
-                Some(spec) => Some(
-                    build_probe_state(spec, base_url).map_err(|e| VclError::new(format!("reqwest: failed to add probe to {vcl_name} ({e})")))?,
-                ),
+                Some(spec) => Some(build_probe_state(spec, base_url).map_err(|e| {
+                    VclError::new(format!("reqwest: failed to add probe to {vcl_name} ({e})"))
+                })?),
                 None => None,
             };
             let has_probe = probe_state.is_some();
@@ -239,15 +247,22 @@ mod reqwest {
 
             match (n, sep) {
                 (0, _) => Ok(VCL_STRING::default()),
-                (_, None) => all_headers.next().map(HeaderValue::as_ref).into_vcl(&mut ctx.ws),
+                (_, None) => all_headers
+                    .next()
+                    .map(HeaderValue::as_ref)
+                    .into_vcl(&mut ctx.ws),
                 (_, Some(s)) => {
                     let mut ws = ctx.ws.reserve();
                     for (i, h) in all_headers.enumerate() {
                         if i != 0 {
-                            ws.buf.write(s.as_ref()).map_err(|e| VclError::new(e.to_string()))?;
+                            ws.buf
+                                .write(s.as_ref())
+                                .map_err(|e| VclError::new(e.to_string()))?;
                         }
 
-                        ws.buf.write(h.as_ref()).map_err(|e| VclError::new(e.to_string()))?;
+                        ws.buf
+                            .write(h.as_ref())
+                            .map_err(|e| VclError::new(e.to_string()))?;
                     }
                     let buf = ws.release(0);
                     buf.into_vcl(&mut ctx.ws)
@@ -270,7 +285,7 @@ mod reqwest {
                 Ok(resp) => match resp.body {
                     None => Ok(VCL_STRING::default()),
                     Some(ref b) => b.into_vcl(&mut ctx.ws),
-                }
+                },
             }
         }
 
@@ -319,8 +334,8 @@ mod reqwest {
 }
 
 mod reqwest_private {
+    use anyhow::Error;
     use bytes::Bytes;
-use anyhow::Error;
     use std::boxed::Box;
     use std::io::Write;
     use std::os::raw::{c_char, c_uint, c_void};
@@ -902,7 +917,10 @@ use anyhow::Error;
         }));
     }
 
-    pub fn build_probe_state(mut probe: Probe, base_url: Option<&str>) -> Result<ProbeState, VclError> {
+    pub fn build_probe_state(
+        mut probe: Probe,
+        base_url: Option<&str>,
+    ) -> Result<ProbeState, VclError> {
         // sanitize probe (see vbp_set_defaults in Varnish Cache)
         if probe.timeout.is_zero() {
             probe.timeout = Duration::from_secs(2);
@@ -929,11 +947,17 @@ use anyhow::Error;
         };
         let url = if let Some(base_url) = base_url {
             let full_url = format!("{}{}", base_url, spec_url);
-            Url::parse(&full_url).map_err(|e| VclError::new(format!("problem with probe endpoint {full_url} ({e})")))?
+            Url::parse(&full_url).map_err(|e| {
+                VclError::new(format!("problem with probe endpoint {full_url} ({e})"))
+            })?
         } else if spec_url.starts_with('/') {
-            return Err(VclError::new("client has no .base_url, and the probe doesn't have a fully-qualified URL as .url".to_string()));
+            return Err(VclError::new(
+                "client has no .base_url, and the probe doesn't have a fully-qualified URL as .url"
+                    .to_string(),
+            ));
         } else {
-            Url::parse(spec_url).map_err(|e| VclError::new(format!("probe endpoint {spec_url} ({e})")))?
+            Url::parse(spec_url)
+                .map_err(|e| VclError::new(format!("probe endpoint {spec_url} ({e})")))?
         };
         Ok(ProbeState {
             spec: probe,

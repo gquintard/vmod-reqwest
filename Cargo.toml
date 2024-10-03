@@ -3,15 +3,12 @@ name = "vmod_reqwest"
 version = "0.0.12"
 edition = "2021"
 license = "BSD-3-Clause"
-authors = [ "Guillaume Quintard guillaume.quintard@gmail.com" ]
-
-[build-dependencies]
-varnish = { git = "https://github.com/gquintard/varnish-rs.git", branch = "proc-macro-cleanup-gq"}
+authors = ["Guillaume Quintard guillaume.quintard@gmail.com"]
 
 [dependencies]
-varnish = { git = "https://github.com/gquintard/varnish-rs.git", branch = "proc-macro-cleanup-gq"}
-varnish-sys = { git = "https://github.com/gquintard/varnish-rs.git", branch = "proc-macro-cleanup-gq"}
-varnish-macros = { git = "https://github.com/gquintard/varnish-rs.git", branch = "proc-macro-cleanup-gq" }
+varnish = { path = "../varnish-rs/varnish" }
+varnish-sys = { path = "../varnish-rs/varnish-sys" }
+varnish-macros = { path = "../varnish-rs/varnish-macros" }
 regex = "1.5"
 lru = "0.7.1"
 bytes = "1.1.0"
