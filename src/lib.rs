@@ -1,3 +1,5 @@
+#![expect(clippy::box_collection)] // Box<Vec<T>> is required for now by proc macro
+
 mod implementation;
 
 use varnish::run_vtc_tests;
@@ -5,7 +7,6 @@ run_vtc_tests!("tests/*.vtc");
 
 #[varnish::vmod(docs = "README.md")]
 mod reqwest {
-    use crate::implementation::reqwest_private::*;
     use std::boxed::Box;
     use std::error::Error;
     use std::io::Write;
@@ -13,13 +14,11 @@ mod reqwest {
 
     use reqwest::header::HeaderValue;
     use tokio::sync::mpsc::Sender;
-    use varnish::vcl::Backend;
-    use varnish::vcl::Probe;
-    use varnish::vcl::{Ctx, Event};
-
     // FIXME: needed for header()
     use varnish::ffi::{VCL_BACKEND, VCL_STRING};
-    use varnish::vcl::{IntoVCL, VclError};
+    use varnish::vcl::{Backend, Ctx, Event, IntoVCL, Probe, VclError};
+
+    use crate::implementation::reqwest_private::*;
 
     impl client {
         #[allow(clippy::too_many_arguments)]
@@ -29,14 +28,14 @@ mod reqwest {
             #[shared_per_vcl] vp_vcl: &mut Option<Box<BgThread>>,
             base_url: Option<&str>,
             https: Option<bool>,
-            #[arg(default = 10)] follow: i64,
+            #[default(10)] follow: i64,
             timeout: Option<Duration>,
             connect_timeout: Option<Duration>,
-            #[arg(default = true)] auto_gzip: bool,
-            #[arg(default = true)] auto_deflate: bool,
-            #[arg(default = true)] auto_brotli: bool,
-            #[arg(default = false)] accept_invalid_certs: bool,
-            #[arg(default = false)] accept_invalid_hostnames: bool,
+            #[default(true)] auto_gzip: bool,
+            #[default(true)] auto_deflate: bool,
+            #[default(true)] auto_brotli: bool,
+            #[default(false)] accept_invalid_certs: bool,
+            #[default(false)] accept_invalid_hostnames: bool,
             http_proxy: Option<&str>,
             https_proxy: Option<&str>,
             probe: Option<Probe>,
@@ -114,7 +113,7 @@ mod reqwest {
             #[shared_per_task] vp_task: &mut Option<Box<Vec<Entry>>>,
             name: &str,
             url: &str,
-            #[arg(default = "GET")] method: &str,
+            #[default("GET")] method: &str,
         ) {
             if vp_task.as_ref().is_none() {
                 *vp_task = Some(Box::new(Vec::new()));

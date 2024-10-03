@@ -1,6 +1,4 @@
 pub mod reqwest_private {
-    use anyhow::Error;
-    use bytes::Bytes;
     use std::boxed::Box;
     use std::io::Write;
     use std::os::raw::{c_char, c_uint, c_void};
@@ -8,16 +6,16 @@ pub mod reqwest_private {
     use std::sync::Mutex;
     use std::time::{Duration, Instant, SystemTime};
 
-    use ::reqwest::Client;
-    use ::reqwest::Url;
+    use ::reqwest::{Client, Url};
+    use anyhow::Error;
+    use bytes::Bytes;
     //use reqwest::header::HeaderValue;
     use tokio::sync::mpsc::{Receiver, Sender, UnboundedSender};
     use varnish::ffi::{BS_CACHED, BS_ERROR, BS_NONE};
-    use varnish::vcl::Vsb;
-    use varnish::vcl::{log, Ctx, Event, LogTag};
+    use varnish::vcl::{
+        log, Ctx, Event, LogTag, Probe, Request as ProbeRequest, VclError, VclResult, Vsb,
+    };
     use varnish::vcl::{Backend, Serve, Transfer /*, VCLBackendPtr*/};
-    use varnish::vcl::{Probe, Request as ProbeRequest};
-    use varnish::vcl::{VclError, VclResult};
 
     pub struct ProbeState {
         spec: Probe,
@@ -559,7 +557,7 @@ pub mod reqwest_private {
                     update_health(bitmap, spec.threshold, spec.window, new_bit);
                 log(
                     LogTag::BackendHealth,
-                    &format!(
+                    format!(
                         "{} {} {} {} {} {} {} {} {} {}",
                         name,
                         if changed { "Went" } else { "Still" },
