@@ -22,11 +22,11 @@ import reqwest from "path/to/libreqwest.so";
 ```vcl
 // Create a new instance of the object in your VCL init function
 sub vcl_init {
-    new new = client.new([STRING base_url], [BOOL https], [INT follow], [DURATION timeout], [DURATION connect_timeout], [BOOL auto_gzip], [BOOL auto_deflate], [BOOL auto_brotli], [BOOL accept_invalid_certs], [BOOL accept_invalid_hostnames], [STRING http_proxy], [STRING https_proxy]);
+    new new = client.new([STRING base_url], [BOOL https], INT follow = 10, [DURATION timeout], [DURATION connect_timeout], BOOL auto_gzip = 1, BOOL auto_deflate = 1, BOOL auto_brotli = 1, BOOL accept_invalid_certs = 0, BOOL accept_invalid_hostnames = 0, [STRING http_proxy], [STRING https_proxy], [PROBE probe]);
 }
 ```
 
-#### Method `VOID init(STRING name, STRING url, [STRING method])`
+#### Method `VOID init(STRING name, STRING url, STRING method = "GET")`
 
 #### Method `VOID send(STRING name)`
 
