@@ -6,19 +6,19 @@ license = "BSD-3-Clause"
 authors = ["Guillaume Quintard guillaume.quintard@gmail.com"]
 
 [dependencies]
-varnish = { path = "../varnish-rs/varnish" }
-varnish-sys = { path = "../varnish-rs/varnish-sys" }
-varnish-macros = { path = "../varnish-rs/varnish-macros" }
-regex = "1.5"
-lru = "0.7.1"
+anyhow = "1.0"
 bytes = "1.1.0"
-reqwest = { version = "0.11", features = ["stream", "deflate", "gzip", "brotli", "native-tls"] }
-tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 futures-util = "0.3"
 hyper = "0.14.16"
-anyhow = "1.0"
+lru = "0.7.1"
+regex = "1.5"
+reqwest = { version = "0.11", features = ["stream", "deflate", "gzip", "brotli", "native-tls"] }
 serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+varnish = { git = "https://github.com/gquintard/varnish-rs.git", branch = "feature-macro"}
+varnish-macros = { git = "https://github.com/gquintard/varnish-rs.git", branch = "feature-macro" }
+varnish-sys = { git = "https://github.com/gquintard/varnish-rs.git", branch = "feature-macro"}
 
 [lib]
 crate-type = ["cdylib"]
