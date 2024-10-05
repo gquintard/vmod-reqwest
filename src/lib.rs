@@ -11,25 +11,13 @@ use std::time::{Duration, Instant, SystemTime};
 
 use reqwest::header::HeaderValue;
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedSender};
-use varnish::vcl::backend::{Backend, Serve, Transfer, VCLBackendPtr};
-use varnish::vcl::ctx::{log, Ctx, Event, LogTag};
-use varnish::vcl::probe;
-use varnish::vcl::probe::Probe;
-use varnish::vcl::vpriv::VPriv;
-use varnish::vcl::vsb::Vsb;
+use varnish::vcl::{Backend, Serve, Transfer, VCLBackendPtr};
+use varnish::vcl::{log, Ctx, Event, LogTag};
+use varnish::vcl::{Probe, Request as ProbeRequest};
+use varnish::vcl::VPriv;
+use varnish::vcl::Vsb;
 
-varnish::vtc!(test01);
-varnish::vtc!(test02);
-varnish::vtc!(test03);
-varnish::vtc!(test04);
-varnish::vtc!(test05);
-varnish::vtc!(test06);
-varnish::vtc!(test07);
-varnish::vtc!(test08);
-varnish::vtc!(test09);
-varnish::vtc!(test10);
-varnish::vtc!(test11);
-varnish::vtc!(test12);
+varnish::run_vtc_tests!("tests/*.vtc");
 
 macro_rules! init_err {
     ($n:ident) => {
@@ -143,11 +131,11 @@ impl<'a> Serve<BackendResp> for VCLBackend {
             let bo = (*ctx.raw).bo.as_mut().unwrap();
 
             if !(*bo).bereq_body.is_null() {
-                varnish_sys::ObjIterate(bo.wrk, bo.bereq_body, p, Some(body_send_iterate), 0);
+                varnish::ffi::ObjIterate(bo.wrk, bo.bereq_body, p, Some(body_send_iterate), 0);
             } else if !bo.req.is_null()
-                && (*bo.req).req_body_status != varnish_sys::BS_NONE.as_ptr()
+                && (*bo.req).req_body_status != varnish::ffi::BS_NONE.as_ptr()
             {
-                let i = varnish_sys::VRB_Iterate(
+                let i = varnish::ffi::VRB_Iterate(
                     bo.wrk,
                     bo.vsl.as_mut_ptr(),
                     bo.req,
@@ -155,13 +143,13 @@ impl<'a> Serve<BackendResp> for VCLBackend {
                     p,
                 );
 
-                if (*bo.req).req_body_status != varnish_sys::BS_CACHED.as_ptr() {
+                if (*bo.req).req_body_status != varnish::ffi::BS_CACHED.as_ptr() {
                     bo.no_retry = "req.body not cached\0".as_ptr() as *const c_char;
                 }
 
-                if (*bo.req).req_body_status == varnish_sys::BS_ERROR.as_ptr() {
+                if (*bo.req).req_body_status == varnish::ffi::BS_ERROR.as_ptr() {
                     assert!(i < 0);
-                    (*bo.req).doclose = &varnish_sys::SC_RX_BODY[0];
+                    (*bo.req).doclose = &varnish::ffi::SC_RX_BODY[0];
                 }
 
                 if i < 0 {
@@ -368,7 +356,7 @@ fn build_probe_state(mut probe: Probe, base_url: Option<&str>) -> Result<ProbeSt
     }
     probe.initial = std::cmp::min(probe.initial, probe.threshold);
     let spec_url = match probe.request {
-        probe::Request::URL(ref u) => u,
+        ProbeRequest::URL(ref u) => u,
         _ => bail!("can't use a probe without .url"),
     };
     let url = if let Some(base_url) = base_url {
