@@ -1373,7 +1373,7 @@ dependencies = [
 [[package]]
 name = "varnish"
 version = "0.0.19"
-source = "git+https://github.com/gquintard/varnish-rs.git?branch=proc-macro-cleanup-gq#2ccb28e4e77df8300a1b3b20532e56735a8b9804"
+source = "git+https://github.com/gquintard/varnish-rs.git?branch=feature-macro#a99d66cdb32a4da309b283ba3bccc46bfd9ddf04"
 dependencies = [
  "glob",
  "varnish-macros",
@@ -1383,7 +1383,7 @@ dependencies = [
 [[package]]
 name = "varnish-macros"
 version = "0.0.19"
-source = "git+https://github.com/gquintard/varnish-rs.git?branch=proc-macro-cleanup-gq#2ccb28e4e77df8300a1b3b20532e56735a8b9804"
+source = "git+https://github.com/gquintard/varnish-rs.git?branch=feature-macro#a99d66cdb32a4da309b283ba3bccc46bfd9ddf04"
 dependencies = [
  "darling",
  "prettyplease",
@@ -1398,7 +1398,7 @@ dependencies = [
 [[package]]
 name = "varnish-sys"
 version = "0.0.19"
-source = "git+https://github.com/gquintard/varnish-rs.git?branch=proc-macro-cleanup-gq#2ccb28e4e77df8300a1b3b20532e56735a8b9804"
+source = "git+https://github.com/gquintard/varnish-rs.git?branch=feature-macro#a99d66cdb32a4da309b283ba3bccc46bfd9ddf04"
 dependencies = [
  "bindgen",
  "pkg-config",
