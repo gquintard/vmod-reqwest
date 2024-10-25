@@ -23,7 +23,7 @@ jobs:
             RUST_VERSION=${{ env.RUST_VERSION }}
             VARNISH_VERSION_NODOT=${{ env.VARNISH_VERSION_NODOT }}
             VARNISH_VERSION=${{ env.VARNISH_VERSION }}
-          platform: linux/amd64,linux/arm64
+          platforms: linux/amd64,linux/arm64
         env:
           VMOD_REQWEST_VERSION: 0.0.12
           RUST_VERSION: 1.73-bookworm
