@@ -4,7 +4,7 @@ jobs:
   main:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v2
@@ -20,9 +20,9 @@ jobs:
           tags: ghcr.io/thomersch/varnish-vmod-reqwest:${{ env.VMOD_REQWEST_VERSION }}
           build-args: |
             VMOD_REQWEST_VERSION=${{ env.VMOD_REQWEST_VERSION }}
-            RUST_VERSION:${{ env.RUST_VERSION }}
-            VARNISH_VERSION_NODOT:${{ env.VARNISH_VERSION_NODOT }}
-            VARNISH_VERSION:${{ env.VARNISH_VERSION }}
+            RUST_VERSION=${{ env.RUST_VERSION }}
+            VARNISH_VERSION_NODOT=${{ env.VARNISH_VERSION_NODOT }}
+            VARNISH_VERSION=${{ env.VARNISH_VERSION }}
           platform: linux/amd64,linux/arm64
         env:
           VMOD_REQWEST_VERSION: 0.0.12
