@@ -17,4 +17,15 @@ jobs:
         uses: docker/build-push-action@v3
         with:
           push: true
-          tags: ghcr.io/thomersch/varnish-vmod-reqwest:0.0.8
+          tags: ghcr.io/thomersch/varnish-vmod-reqwest:${{ VMOD_REQWEST_VERSION }}
+          build-args: |
+            VMOD_REQWEST_VERSION=${{ VMOD_REQWEST_VERSION }}
+            RUST_VERSION:${{ RUST_VERSION }}
+            VARNISH_VERSION_NODOT:${{ VARNISH_VERSION_NODOT }}
+            VARNISH_VERSION:${{ VARNISH_VERSION }}
+          platform: linux/amd64,linux/arm64
+        env:
+          VMOD_REQWEST_VERSION: 0.0.12
+          RUST_VERSION: 1.73-bookworm
+          VARNISH_VERSION_NODOT: "75"
+          VARNISH_VERSION: "7.5"
