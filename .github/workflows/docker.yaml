@@ -26,7 +26,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           push: true
-          tags: ghcr.io/thomersch/varnish-vmod-reqwest:${{ env.VMOD_REQWEST_VERSION }}
+          tags: ghcr.io/{{ github.repository }}:${{ env.VMOD_REQWEST_VERSION }}
           build-args: |
             VMOD_REQWEST_VERSION=${{ env.VMOD_REQWEST_VERSION }}
             RUST_VERSION=${{ env.RUST_VERSION }}
