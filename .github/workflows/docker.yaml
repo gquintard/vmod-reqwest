@@ -32,6 +32,7 @@ jobs:
             RUST_VERSION=${{ env.RUST_VERSION }}
             VARNISH_VERSION_NODOT=${{ env.VARNISH_VERSION_NODOT }}
             VARNISH_VERSION=${{ env.VARNISH_VERSION }}
+            VMOD_REQWEST_REPO=${{ github.repository }}
           platforms: linux/amd64,linux/arm64
         env:
           VMOD_REQWEST_VERSION: ${{ github.ref_name }}

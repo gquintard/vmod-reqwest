@@ -6,8 +6,9 @@ ARG VARNISH_VERSION=7.5
 FROM rust:${RUST_VERSION}
 
 WORKDIR /vmod_reqwest
+ARG VMOD_REQWEST_REPO=gquintard/vmod_reqwest
 ARG VMOD_REQWEST_VERSION=v0.0.12
-ARG RELEASE_URL=https://github.com/gquintard/vmod_reqwest/archive/refs/tags/${VMOD_REQWEST_VERSION}.tar.gz
+ARG RELEASE_URL=https://github.com/${VMOD_REQWEST_REPO}/archive/refs/tags/${VMOD_REQWEST_VERSION}.tar.gz
 ENV CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
 
 ARG VARNISH_VERSION_NODOT
