@@ -20,7 +20,7 @@ cargo build --release
 cargo test --release
 
 mkdir -p "$OUT"
-cp target/debug/lib$PKG.so "$OUT"
+cp target/release/lib$PKG.so "$OUT"
 rst2man $PKG.man.rst > "$OUT/$PKG.3"
 "$VMODTOOL" vmod.vcc -w "$OUT" --output /tmp/tmp_file_to_delete
 rm /tmp/tmp_file_to_delete.*

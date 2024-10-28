@@ -63,6 +63,10 @@ $Method VOID .set_body(PRIV_TASK, STRING name, STRING body)
 
 Set the body of the unsent request named `name`. As for `set_header()`, the request must exist and not have been sent.
 
+$Method VOID .copy_headers_to_req(PRIV_TASK, STRING name)
+
+Copy the native request headers (i.e. `req` or `bereq`) into the request named `name`.
+
 $Method VOID .send(PRIV_VCL, PRIV_TASK, STRING name)
 
 Actually send request `name`. This is non-blocking, and optional if you access the response. Any call to `status()`, `header()`, `body_as_string()` or `error()` will implicitly call `send()` if necessary and wait for the response to arrive.

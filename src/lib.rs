@@ -4,7 +4,7 @@ use anyhow::{anyhow, bail, Context, Error, Result};
 use bytes::Bytes;
 use std::boxed::Box;
 use std::io::Write;
-use std::os::raw::{c_uint, c_void};
+use std::os::raw::{c_char, c_uint, c_void};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
@@ -29,6 +29,7 @@ varnish::vtc!(test08);
 varnish::vtc!(test09);
 varnish::vtc!(test10);
 varnish::vtc!(test11);
+varnish::vtc!(test12);
 
 macro_rules! init_err {
     ($n:ident) => {
@@ -38,7 +39,9 @@ macro_rules! init_err {
 
 macro_rules! send {
     ($tx:ident, $payload:expr) => {
-        $tx.send($payload).await.unwrap()
+        if $tx.send($payload).await.is_err() {
+            return;
+        }
     };
 }
 
@@ -114,6 +117,11 @@ impl<'a> Serve<BackendResp> for VCLBackend {
                 ptr: *const c_void,
                 l: isize,
                 ) -> i32 {
+
+                // nothing to do
+                if ptr.is_null() || l == 0 {
+                    return 0;
+                }
                 let body_chan = (priv_ as *mut BodyChan).as_mut().unwrap();
                 let buf = std::slice::from_raw_parts(ptr as *const u8, l as usize);
                 let bytes = hyper::body::Bytes::copy_from_slice(buf);
@@ -148,7 +156,7 @@ impl<'a> Serve<BackendResp> for VCLBackend {
                 );
 
                 if (*bo.req).req_body_status != varnish_sys::BS_CACHED.as_ptr() {
-                    bo.no_retry = "req.body not cached\0".as_ptr() as *const i8;
+                    bo.no_retry = "req.body not cached\0".as_ptr() as *const c_char;
                 }
 
                 if (*bo.req).req_body_status == varnish_sys::BS_ERROR.as_ptr() {
@@ -603,6 +611,26 @@ impl client {
         }
     }
 
+    pub fn copy_headers_to_req(
+        &mut self,
+        ctx: &Ctx,
+        vp_task: &mut VPriv<Vec<Entry>>,
+        name: &str,
+    ) -> Result<()> {
+        let req = match self.get_transaction(vp_task, name)? {
+            VclTransaction::Req(req) => req,
+            _ => { return Err(init_err!(name)) },
+        };
+        // XXX: we'll always have one of those, but maybe people would want
+        // `req_top`, or even `bereq` while in `vcl_pipe`?
+        let vcl_req = ctx.http_req.as_ref().or(ctx.http_bereq.as_ref()).unwrap();
+
+        for hdr in vcl_req {
+            req.headers.push((hdr.0.into(), hdr.1.into()));
+        }
+
+        Ok(())
+    }
     pub fn status(
         &mut self,
         _ctx: &Ctx,
@@ -629,12 +657,9 @@ impl client {
         let (n, mut all_headers) = match self.get_resp(vp_vcl, vp_task, name)? {
             Err(_) => return Ok(None),
             Ok(resp) => {
-                let mut n = 0;
-                for _ in resp.headers.get_all(key) {
-                    n += 1
-                }
-                (n, resp.headers.get_all(key).iter())
-            },
+                let keys = resp.headers.get_all(key);
+                (keys.iter().count(), keys.iter())
+            }
         };
 
         match (n, sep) {
@@ -644,8 +669,9 @@ impl client {
                 let mut ws = ctx.ws.reserve();
                 for (i, h) in all_headers.enumerate() {
                     if i != 0 {
-                        ws.buf.write(s.as_bytes())?;
+                        ws.buf.write(s.as_ref())?;
                     }
+
                     ws.buf.write(h.as_ref())?;
                 }
                 Ok(Some(ws.release(0)))

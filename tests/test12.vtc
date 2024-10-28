@@ -1,0 +1,31 @@
+varnishtest ".copy_headers_to_req()"
+
+server s1 {
+	rxreq
+	txresp
+	expect req.url == "/my/url"
+	expect req.http.foo == "bar"
+	expect req.http.baz == "qux"
+} -start
+
+varnish v1 -vcl+backend {
+	import reqwest from "${vmod}";
+
+	sub vcl_init {
+		new client = reqwest.client();
+	}
+
+	sub vcl_recv {
+		client.init("s1", "http://${s1_addr}:${s1_port}/my/url");
+		client.copy_headers_to_req(s1);
+		client.send("s1");
+		return (synth(200));
+	}
+} -start
+
+client c1 {
+	txreq -hdr "foo: bar" -hdr "baz: qux"
+	rxresp
+} -run
+
+server s1 -wait

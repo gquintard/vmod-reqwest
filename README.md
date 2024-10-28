@@ -1,4 +1,4 @@
-# vmod_reqwest
+# vmod-reqwest
 
 This is a vmod for [varnish](http://varnish-cache.org/) to send and receive HTTP requests from VCL, leveraging the [reqwest crate](https://docs.rs/reqwest/latest/reqwest/).
 
@@ -25,6 +25,10 @@ Don't hesitate to open github issues if something is unclear or impractical. You
 
 | vmod-reqwest | varnish |
 | :----------- | :-----: |
+| 0.0.12        | 7.5     |
+| 0.0.11        | 7.5     |
+| 0.0.10        | 7.4     |
+| 0.0.9        | 7.3     |
 | 0.0.8        | 7.3     |
 | 0.0.7        | 7.3     |
 | 0.0.6        | 7.2     |
