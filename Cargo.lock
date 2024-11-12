@@ -120,6 +120,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bindgen_helpers"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0656863182a6634e2b71d0f64f1ebe3ce92cabcdc005c596fae702160237f37"
+dependencies = [
+ "bindgen",
+ "convert_case",
+ "regex",
+]
+
+[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -203,6 +214,15 @@ dependencies = [
  "glob",
  "libc",
  "libloading",
+]
+
+[[package]]
+name = "convert_case"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec182b0ca2f35d8fc196cf3404988fd8b8c739a4d270ff118a398feb0cbec1ca"
+dependencies = [
+ "unicode-segmentation",
 ]
 
 [[package]]
@@ -934,9 +954,9 @@ dependencies = [
 
 [[package]]
 name = "regex"
-version = "1.10.4"
+version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c117dbdfde9c8308975b6a18d71f3f385c89461f7b3fb054288ecf2a2058ba4c"
+checksum = "b544ef1b4eac5dc2db33ea63606ae9ffcfac26c1416a2806ae0bf5f56b201191"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -946,9 +966,9 @@ dependencies = [
 
 [[package]]
 name = "regex-automata"
-version = "0.4.6"
+version = "0.4.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86b83b8b9847f9bf95ef68afb0b8e6cdb80f498442f5179a29fad448fcc1eaea"
+checksum = "809e8dc61f6de73b46c85f4c96486310fe304c434cfa43669d7b40f711150908"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -957,9 +977,9 @@ dependencies = [
 
 [[package]]
 name = "regex-syntax"
-version = "0.8.2"
+version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c08c74e62047bb2de4ff487b251e4a92e24f48745648451635cec7d591162d9f"
+checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
 
 [[package]]
 name = "reqwest"
@@ -1184,9 +1204,9 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "syn"
-version = "2.0.77"
+version = "2.0.87"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f35bcdf61fd8e7be6caf75f429fdca8beb3ed76584befb503b1569faee373ed"
+checksum = "25aa4ce346d03a6dcd68dd8b4010bcb74e54e62c90c573f394c46eae99aba32d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1230,6 +1250,26 @@ dependencies = [
  "fastrand",
  "rustix",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "thiserror"
+version = "2.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c006c85c7651b3cf2ada4584faa36773bd07bac24acfb39f3c431b36d7e667aa"
+dependencies = [
+ "thiserror-impl",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "2.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f077553d607adc1caf65430528a576c757a71ed73944b66ebb58ef2bbd243568"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -1360,6 +1400,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "unicode-segmentation"
+version = "1.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6ccf251212114b54433ec949fd6a7841275f9ada20dddd2f29e9ceea4501493"
+
+[[package]]
 name = "url"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1372,8 +1418,9 @@ dependencies = [
 
 [[package]]
 name = "varnish"
-version = "0.0.19"
-source = "git+https://github.com/gquintard/varnish-rs.git?branch=feature-macro#a99d66cdb32a4da309b283ba3bccc46bfd9ddf04"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c648d8f3244e701974d32efded47e84e4580593c2dcf8d325de6342fe7280a0"
 dependencies = [
  "glob",
  "varnish-macros",
@@ -1382,8 +1429,9 @@ dependencies = [
 
 [[package]]
 name = "varnish-macros"
-version = "0.0.19"
-source = "git+https://github.com/gquintard/varnish-rs.git?branch=feature-macro#a99d66cdb32a4da309b283ba3bccc46bfd9ddf04"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ddee5686832ef2a8bafa5927e3c7110d305be3e7e1cefff39807f8c86c45c743"
 dependencies = [
  "darling",
  "prettyplease",
@@ -1397,12 +1445,15 @@ dependencies = [
 
 [[package]]
 name = "varnish-sys"
-version = "0.0.19"
-source = "git+https://github.com/gquintard/varnish-rs.git?branch=feature-macro#a99d66cdb32a4da309b283ba3bccc46bfd9ddf04"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a4c2a1bcf9d45c4693b0030cbf5ac29e6050aaf6f617448c27f7ea6d90a5ffd"
 dependencies = [
  "bindgen",
+ "bindgen_helpers",
  "pkg-config",
  "serde",
+ "thiserror",
 ]
 
 [[package]]
@@ -1419,7 +1470,7 @@ checksum = "49874b5167b65d7193b8aba1567f5c7d93d001cafc34600cee003eda787e483f"
 
 [[package]]
 name = "vmod_reqwest"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1432,8 +1483,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "varnish",
- "varnish-macros",
- "varnish-sys",
 ]
 
 [[package]]

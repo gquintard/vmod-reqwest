@@ -13,7 +13,7 @@ pub mod reqwest_private {
     use tokio::sync::mpsc::{Receiver, Sender, UnboundedSender};
     use varnish::ffi::{BS_CACHED, BS_ERROR, BS_NONE};
     use varnish::vcl::{
-        log, Ctx, Event, LogTag, Probe, Request as ProbeRequest, VclError, VclResult, Vsb,
+        log, Ctx, Event, LogTag, Probe, Request as ProbeRequest, VclError, VclResult, Buffer,
     };
     use varnish::vcl::{Backend, Serve, Transfer /*, VCLBackendPtr*/};
 
@@ -217,7 +217,7 @@ pub mod reqwest_private {
             )
         }
 
-        fn list(&self, ctx: &mut Ctx<'_>, vsb: &mut Vsb<'_>, detailed: bool, json: bool) {
+        fn list(&self, ctx: &mut Ctx<'_>, vsb: &mut Buffer<'_>, detailed: bool, json: bool) {
             if self.probe_state.is_none() {
                 return self.list_without_probe(ctx, vsb, detailed, json);
             }
@@ -283,7 +283,7 @@ pub mod reqwest_private {
                     s
                 }
             };
-            vsb.cat(&msg).unwrap();
+            vsb.write(&msg).unwrap();
         }
     }
 
@@ -656,15 +656,15 @@ pub mod reqwest_private {
         pub fn get_transaction<'a>(
             &self,
             vp_task: &'a mut Option<Box<Vec<Entry>>>,
-            name: &str,
+            name: &'a str,
         ) -> VclResult<&'a mut VclTransaction> {
             vp_task
                 .as_mut()
-                .ok_or_else(|| <&str as Into<VclError>>::into(name))?
+                .ok_or_else(|| <String as Into<VclError>>::into(format!("reqwest.get_transaction(): unknown request ({name})")))?
                 .iter_mut()
                 .find(|e| name == e.req_name && self.name == e.client_name)
                 .map(|e| &mut e.transaction)
-                .ok_or_else(|| name.into())
+                .ok_or_else(|| <String as Into<VclError>>::into(format!("reqwest.get_transaction(): unknown request ({name})")))
         }
 
         // we have a stacked Result here because the first one will fail at the
@@ -673,7 +673,7 @@ pub mod reqwest_private {
             &self,
             vp_vcl: Option<&BgThread>,
             vp_task: &'a mut Option<Box<Vec<Entry>>>,
-            name: &str,
+            name: &'a str,
         ) -> VclResult<Result<&'a Response, VclError>> {
             let t = self.get_transaction(vp_task, name)?;
             self.wait_on(vp_vcl.as_ref().unwrap(), t);
