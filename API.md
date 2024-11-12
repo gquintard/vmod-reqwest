@@ -35,6 +35,12 @@ Create a `client` object that can be used both for backend requests and in-vcl r
 
 `base_url` and `https` are mutually exclusive and can't be specified together.
 
+`probe` will work the same way as for regular backends, but there are a few details to be aware of:
+- the health will only prevent a fetch for backends (i.e. when using `client.backend()`), not when creating free standing requests (`client.init()`/`client.send()`).
+- if the `client` has a `base_url`, the probe will prepend it to its `.url` field to know which URL to probe.
+- otherwise, it'll just use the `.url` field as-is (but will immediately error out if `.url` starts with a `/`).
+- this means `client`s without`base_url` can actually probe a another server that the one used as a backend.
+
 * `[STRING base_url]`:
 * `[BOOL https]`:
 * `INT follow`:
@@ -57,11 +63,7 @@ HTTP proxy to send your requests through
 * `[STRING https_proxy]`:
 HTTPS proxy to send your requests through
 * `[PROBE probe]`:
-`probe` will work the same way as for regular backends, but there are a few details to be aware of:
-- the health will only prevent a fetch for backends (i.e. when using `client.backend()`), not when creating free standing requests (`client.init()`/`client.send()`).
-- if the `client` has a `base_url`, the probe will prepend it to its `.url` field to know which URL to probe.
-- otherwise, it'll just use the `.url` field as-is (but will immediately error out if `.url` starts with a `/`).
-- this means `client`s without`base_url` can actually probe a another server that the one used as a backend.
+a backend probe to attach to the backend
 
 #### Method `VOID init(STRING name, STRING url, STRING method = "GET")`
 
