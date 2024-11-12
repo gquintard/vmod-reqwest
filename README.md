@@ -17,7 +17,7 @@ And in both cases:
 - HTTP redirection support (it will automatically follow 30X responses)
 - (optional) automatic `gzip` and `brotli` decompression
 
-The full VCL API is described in (API.md).
+The full VCL API is described in [API.md](API.md).
 
 Don't hesitate to open github issues if something is unclear or impractical. You can also join us on [discord](https://discord.com/invite/EuwdvbZR6d).
 
