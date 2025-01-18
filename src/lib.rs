@@ -36,19 +36,23 @@ mod reqwest {
             https: Option<bool>,
             /// `follow` dictates whether to follow redirects, and how many hops are allowed before becoming an error. A value of `0` or less will disable redirect folowing,
             /// meaning you will actually receive 30X responses if they are sent by the server.
-            #[default(10)] follow: i64,
+            #[default(10)]
+            follow: i64,
             /// `connect_timeout` and `timeout` dictate how long we give a request to connect, and finish, respectively.
             timeout: Option<Duration>,
             connect_timeout: Option<Duration>,
             /// `auto_gzip`, `auto_deflate` and `auto_brotli`, if set, will automatically set the relevant `accept-encoding` values and automatically decompress the response
             /// body. Note that this will only work if the `accept-encoding` header isn't already set AND if there's no `range` header. In practice, when contacting a backend, you will need to `unset bereq.http.accept-encoding;`, as Varnish sets it automatically.
-            #[default(true)] auto_gzip: bool,
+            #[default(true)]
+            auto_gzip: bool,
             #[default(true)] auto_deflate: bool,
             #[default(true)] auto_brotli: bool,
             /// avoid erroring on invalid certificates, for example self-signed ones. It's a dangerous option, use at your own risk!
-            #[default(false)] accept_invalid_certs: bool,
+            #[default(false)]
+            accept_invalid_certs: bool,
             /// even more dangerous, doesn't even require for the certificate hostname to match the server being contacted.
-            #[default(false)] accept_invalid_hostnames: bool,
+            #[default(false)]
+            accept_invalid_hostnames: bool,
             /// HTTP proxy to send your requests through
             http_proxy: Option<&str>,
             /// HTTPS proxy to send your requests through
@@ -137,7 +141,8 @@ mod reqwest {
             /// URL/path of the request
             url: &str,
             /// HTTP method to use
-            #[default("GET")] method: &str,
+            #[default("GET")]
+            method: &str,
         ) {
             if vp_task.as_ref().is_none() {
                 *vp_task = Some(Box::new(Vec::new()));

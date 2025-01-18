@@ -13,7 +13,7 @@ pub mod reqwest_private {
     use tokio::sync::mpsc::{Receiver, Sender, UnboundedSender};
     use varnish::ffi::{BS_CACHED, BS_ERROR, BS_NONE};
     use varnish::vcl::{
-        log, Ctx, Event, LogTag, Probe, Request as ProbeRequest, VclError, VclResult, Buffer,
+        log, Buffer, Ctx, Event, LogTag, Probe, Request as ProbeRequest, VclError, VclResult,
     };
     use varnish::vcl::{Backend, Serve, Transfer /*, VCLBackendPtr*/};
 
@@ -660,11 +660,19 @@ pub mod reqwest_private {
         ) -> VclResult<&'a mut VclTransaction> {
             vp_task
                 .as_mut()
-                .ok_or_else(|| <String as Into<VclError>>::into(format!("reqwest.get_transaction(): unknown request ({name})")))?
+                .ok_or_else(|| {
+                    <String as Into<VclError>>::into(format!(
+                        "reqwest.get_transaction(): unknown request ({name})"
+                    ))
+                })?
                 .iter_mut()
                 .find(|e| name == e.req_name && self.name == e.client_name)
                 .map(|e| &mut e.transaction)
-                .ok_or_else(|| <String as Into<VclError>>::into(format!("reqwest.get_transaction(): unknown request ({name})")))
+                .ok_or_else(|| {
+                    <String as Into<VclError>>::into(format!(
+                        "reqwest.get_transaction(): unknown request ({name})"
+                    ))
+                })
         }
 
         // we have a stacked Result here because the first one will fail at the
