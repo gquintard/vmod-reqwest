@@ -18,7 +18,6 @@ jobs:
       fail-fast: false  # 7.6 is not yet supported properly. Once fixed, this can be set to true
       matrix:
         include:
-          - setup: varnish74
           - setup: varnish75
           - setup: varnish76
     env:
