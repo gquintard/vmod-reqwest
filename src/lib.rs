@@ -115,6 +115,7 @@ mod reqwest {
             let be = Backend::new(
                 ctx,
                 vcl_name,
+                "reqwest",
                 VCLBackend {
                     name: vcl_name.to_string(),
                     bgt: &**vp_vcl.as_ref().unwrap(),

@@ -1573,8 +1573,8 @@ checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 
 [[package]]
 name = "varnish"
-version = "0.3.0"
-source = "git+https://github.com/gquintard/varnish-rs.git?tag=v0.3.0#c7cb33e06da99edbddebae0afab33ddfc766b2c3"
+version = "0.4.0"
+source = "git+https://github.com/gquintard/varnish-rs.git?branch=main#3895d455065397291749e10a1d7972e826c300ae"
 dependencies = [
  "glob",
  "varnish-macros",
@@ -1583,8 +1583,8 @@ dependencies = [
 
 [[package]]
 name = "varnish-macros"
-version = "0.3.0"
-source = "git+https://github.com/gquintard/varnish-rs.git?tag=v0.3.0#c7cb33e06da99edbddebae0afab33ddfc766b2c3"
+version = "0.4.0"
+source = "git+https://github.com/gquintard/varnish-rs.git?branch=main#3895d455065397291749e10a1d7972e826c300ae"
 dependencies = [
  "darling",
  "prettyplease",
@@ -1598,8 +1598,8 @@ dependencies = [
 
 [[package]]
 name = "varnish-sys"
-version = "0.3.0"
-source = "git+https://github.com/gquintard/varnish-rs.git?tag=v0.3.0#c7cb33e06da99edbddebae0afab33ddfc766b2c3"
+version = "0.4.0"
+source = "git+https://github.com/gquintard/varnish-rs.git?branch=main#3895d455065397291749e10a1d7972e826c300ae"
 dependencies = [
  "bindgen_helpers",
  "memchr",

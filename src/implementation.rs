@@ -41,10 +41,6 @@ pub mod reqwest_private {
     }
 
     impl<'a> Serve<BackendResp> for VCLBackend {
-        fn get_type(&self) -> &str {
-            "reqwest"
-        }
-
         fn get_headers(&self, ctx: &mut Ctx<'_>) -> VclResult<Option<BackendResp>> {
             if !self.healthy(ctx).0 {
                 return Err("unhealthy".into());
@@ -602,7 +598,7 @@ pub mod reqwest_private {
         }
         probe.initial = std::cmp::min(probe.initial, probe.threshold);
         let spec_url = match probe.request {
-            ProbeRequest::URL(ref u) => u,
+            ProbeRequest::Url(ref u) => u,
             _ => return Err(VclError::new("can't use a probe without .url".to_string())),
         };
         let url = if let Some(base_url) = base_url {
