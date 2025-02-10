@@ -16,7 +16,7 @@ regex = "1.5"
 reqwest = { version = "0.11", features = ["stream", "deflate", "gzip", "brotli", "native-tls"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
-varnish = {version = "0.1.0", features = ["ffi"] }
+varnish = { git = "https://github.com/gquintard/varnish-rs.git", tag = "v0.3.0", features = [ "ffi" ] }
 
 [lib]
 crate-type = ["cdylib"]

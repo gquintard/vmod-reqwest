@@ -267,7 +267,7 @@ mod reqwest {
         }
 
         /// Retrieve the value of the first header named `key`, or returns NULL if it doesn't exist, or there was a transmission error.
-        pub fn header(
+        pub unsafe fn header(
             &self,
             ctx: &mut Ctx,
             #[shared_per_vcl] vp_vcl: Option<&BgThread>,
@@ -314,7 +314,7 @@ mod reqwest {
         }
 
         /// Retrieve the response body, returns an empty string in case of error.
-        pub fn body_as_string(
+        pub unsafe fn body_as_string(
             &self,
             ctx: &mut Ctx,
             #[shared_per_vcl] vp_vcl: Option<&BgThread>,
@@ -349,7 +349,7 @@ mod reqwest {
         }
 
         /// Return a VCL backend built upon the `client` specification
-        pub fn backend(&self) -> VCL_BACKEND {
+        pub unsafe fn backend(&self) -> VCL_BACKEND {
             self.be.vcl_ptr()
         }
     }
