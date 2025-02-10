@@ -15,6 +15,7 @@ mod reqwest {
     // FIXME: needed for header()
     use varnish::ffi::{VCL_BACKEND, VCL_STRING};
     use varnish::vcl::{Backend, Ctx, Event, IntoVCL, Probe, VclError};
+    use varnish::vsc_wrapper::Vsc;
 
     use crate::implementation::reqwest_private::*;
 
@@ -123,6 +124,7 @@ mod reqwest {
                     probe_state,
                     https: https.unwrap_or(false),
                     base_url: base_url.map(|s| s.into()),
+                    stats: Vsc::new("mystats", "default"),
                 },
                 has_probe,
             )?;

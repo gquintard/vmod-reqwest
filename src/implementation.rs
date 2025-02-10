@@ -12,6 +12,8 @@ pub mod reqwest_private {
     //use reqwest::header::HeaderValue;
     use tokio::sync::mpsc::{Receiver, Sender, UnboundedSender};
     use varnish::ffi::{BS_CACHED, BS_ERROR, BS_NONE};
+    use varnish::Stats;
+    use varnish::vsc_wrapper::Vsc;
     use varnish::vcl::{
         log, Buffer, Ctx, Event, LogTag, Probe, Request as ProbeRequest, VclError, VclResult,
     };
@@ -31,6 +33,16 @@ pub mod reqwest_private {
         pub be: Backend<VCLBackend, BackendResp>,
     }
 
+    #[derive(Stats)]
+    #[repr(C)] // required for correct memory layout
+    pub struct ReqwestStats {
+        #[counter]
+        req: AtomicU64,
+        #[counter]
+        unhealthy: AtomicU64,
+        #[counter]
+        fail: AtomicU64,
+    }
     pub struct VCLBackend {
         pub name: String,
         pub bgt: *const BgThread,
@@ -38,11 +50,14 @@ pub mod reqwest_private {
         pub probe_state: Option<ProbeState>,
         pub https: bool,
         pub base_url: Option<String>,
+        pub stats: Vsc::<ReqwestStats>,
     }
 
     impl<'a> Serve<BackendResp> for VCLBackend {
         fn get_headers(&self, ctx: &mut Ctx<'_>) -> VclResult<Option<BackendResp>> {
+            self.stats.req.fetch_add(1, Ordering::Relaxed);
             if !self.healthy(ctx).0 {
+                self.stats.unhealthy.fetch_add(1, Ordering::Relaxed);
                 return Err("unhealthy".into());
             }
 
@@ -150,7 +165,10 @@ pub mod reqwest_private {
             }
             let resp = match resp_rx.blocking_recv().unwrap() {
                 RespMsg::Hdrs(resp) => resp,
-                RespMsg::Err(e) => return Err(e.to_string().into()),
+                RespMsg::Err(e) => {
+                    self.stats.fail.fetch_add(1, Ordering::Relaxed);
+                    return Err(e.to_string().into());
+                },
                 _ => unreachable!(),
             };
             let beresp = ctx.http_beresp.as_mut().unwrap();

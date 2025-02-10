@@ -1,0 +1,35 @@
+varnishtest "backend() with cached body"
+
+server s1 {
+	rxreq
+	txresp
+
+	close
+} -start
+
+# VCL, no backend needed
+varnish v1 -vcl {
+	import reqwest from "${vmod}";
+	import std;
+
+	backend s1 none;
+
+	sub vcl_init {
+		new client = reqwest.client();
+	}
+
+	sub vcl_backend_fetch {
+		set bereq.backend = client.backend();
+	}
+} -start
+varnish v1 -cliok "param.set debug +syncvsl"
+
+client c1 {
+	txreq
+	rxresp
+} -run
+
+shell {
+	varnishstat -f '*mystats*' -n ${v1_name}
+	false
+}
