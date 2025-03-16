@@ -340,7 +340,6 @@ fn sob_helper(sob: StrOrBytes) -> &str {
                         None => return Ok(n),
                     };
                 }
-
                 let pull_buf = self.bytes.as_ref().unwrap();
                 let to_write = &pull_buf[self.cursor..];
                 let used = buf.write(to_write).unwrap();
@@ -349,6 +348,9 @@ fn sob_helper(sob: StrOrBytes) -> &str {
                 assert!(self.cursor <= pull_buf.len());
                 if self.cursor == pull_buf.len() {
                     self.bytes = None;
+                }
+                if buf.len() == 0 {
+                    return  Ok(n);
                 }
             }
         }
