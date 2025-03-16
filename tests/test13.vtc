@@ -1,0 +1,33 @@
+varnishtest "npmjs.org"
+
+varnish v1 -vcl+backend {
+	import reqwest from "${vmod}";
+	vcl 4.1;
+
+	backend default none;
+
+	sub vcl_init { 
+		new npm = reqwest.client(base_url = "https://registry.npmjs.org");
+	}
+
+	sub vcl_backend_fetch {
+		set bereq.backend = npm.backend();
+		set bereq.http.host = "registry.npmjs.org";
+	}
+
+	sub vcl_backend_response { 
+		set beresp.http.do_stream = false;
+	}
+} -start
+varnish v1 -cliok "param.set debug +syncvsl"
+
+client c1 {
+	txreq
+	rxresp
+	expect resp.status == 200
+
+	txreq -url /hendo-cli
+	rxresp
+	expect resp.status == 200
+	expect resp.http.content-type == "application/json"
+} -run
