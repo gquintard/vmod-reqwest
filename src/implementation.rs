@@ -15,7 +15,7 @@ pub mod reqwest_private {
     use varnish::vcl::{
         log, Buffer, Ctx, Event, LogTag, Probe, Request as ProbeRequest, VclError, VclResult,
     };
-    use varnish::vcl::{Backend, Serve, Transfer /*, VCLBackendPtr*/};
+    use varnish::vcl::{Backend, VclBackend, VclResponse, StrOrBytes};
 
     pub struct ProbeState {
         spec: Probe,
@@ -40,19 +40,23 @@ pub mod reqwest_private {
         pub base_url: Option<String>,
     }
 
-    impl<'a> Serve<BackendResp> for VCLBackend {
-        fn get_type(&self) -> &str {
-            "reqwest"
-        }
+    // silly helper until varnish-rs provides something more ergonomic
+fn sob_helper(sob: StrOrBytes) -> &str {
+    match sob {
+        StrOrBytes::Bytes(_) => panic!("{:?} isn't a string", sob),
+        StrOrBytes::Utf8(s) => s,
+    }
+}
 
-        fn get_headers(&self, ctx: &mut Ctx<'_>) -> VclResult<Option<BackendResp>> {
+    impl<'a> VclBackend<BackendResp> for VCLBackend {
+        fn get_response(&self, ctx: &mut Ctx<'_>) -> VclResult<Option<BackendResp>> {
             if !self.healthy(ctx).0 {
                 return Err("unhealthy".into());
             }
 
             let bereq = ctx.http_bereq.as_ref().unwrap();
 
-            let bereq_url = bereq.url().unwrap();
+            let bereq_url = sob_helper(bereq.url().unwrap());
 
             let url = if let Some(base_url) = &self.base_url {
                 // if the client has a base_url, prepend it to bereq.url
@@ -60,10 +64,11 @@ pub mod reqwest_private {
             } else if bereq_url.starts_with('/') {
                 // otherwise, if bereq.url looks like a path, try to find a host to build a full URL
                 if let Some(host) = bereq.header("host") {
+                    let host_str = sob_helper(host);
                     format!(
                         "{}://{}{}",
                         if self.https { "https" } else { "http" },
-                        host,
+                        host_str,
                         bereq_url
                     )
                 } else {
@@ -76,14 +81,14 @@ pub mod reqwest_private {
 
             let (req_body_tx, body) = hyper::body::Body::channel();
             let req = Request {
-                method: bereq.method().unwrap().to_string(),
+                method: sob_helper(bereq.method().unwrap()).to_string(),
                 url,
                 client: self.client.clone(),
                 body: ReqBody::Stream(body),
                 vcl: false,
                 headers: bereq
                     .into_iter()
-                    .map(|(k, v)| (k.into(), v.into()))
+                    .map(|(k, v)| (k.into(), v.as_ref().to_owned()))
                     .collect(),
             };
 
@@ -219,7 +224,25 @@ pub mod reqwest_private {
 
         fn list(&self, ctx: &mut Ctx<'_>, vsb: &mut Buffer<'_>, detailed: bool, json: bool) {
             if self.probe_state.is_none() {
-                return self.list_without_probe(ctx, vsb, detailed, json);
+                let state = if self.healthy(ctx).0 {
+                    "healthy"
+                } else {
+                    "sick"
+                };
+                if json {
+                    if detailed {
+                        vsb.write(&"[0, 0, \"").unwrap();
+                        vsb.write(&state).unwrap();
+                        vsb.write(&"\"],").unwrap();
+                    } else {
+                        vsb.write(&"[]").unwrap();
+                    }
+                } else if detailed {  
+                    vsb.write(&"0/0\t").unwrap();
+                    vsb.write(&state).unwrap();
+                }
+                return;
+
             }
             let ProbeState {
                 history,
@@ -302,7 +325,7 @@ pub mod reqwest_private {
         pub content_length: Option<usize>,
     }
 
-    impl Transfer for BackendResp {
+    impl VclResponse for BackendResp {
         fn read(&mut self, mut buf: &mut [u8]) -> VclResult<usize> {
             let mut n = 0;
             loop {
@@ -354,7 +377,7 @@ pub mod reqwest_private {
     pub struct Request {
         pub url: String,
         pub method: String,
-        pub headers: Vec<(String, String)>,
+        pub headers: Vec<(String, Vec<u8>)>,
         pub body: ReqBody,
         pub client: Client,
         pub vcl: bool,
@@ -602,7 +625,7 @@ pub mod reqwest_private {
         }
         probe.initial = std::cmp::min(probe.initial, probe.threshold);
         let spec_url = match probe.request {
-            ProbeRequest::URL(ref u) => u,
+            ProbeRequest::Url(ref u) => u,
             _ => return Err(VclError::new("can't use a probe without .url".to_string())),
         };
         let url = if let Some(base_url) = base_url {

@@ -3,7 +3,7 @@ mod implementation;
 use varnish::run_vtc_tests;
 run_vtc_tests!("tests/*.vtc");
 
-#[varnish::vmod(docs = "README.md")]
+#[varnish::vmod(docs = "API.md")]
 mod reqwest {
     use std::boxed::Box;
     use std::error::Error;
@@ -114,6 +114,7 @@ mod reqwest {
 
             let be = Backend::new(
                 ctx,
+                "reqwest",
                 vcl_name,
                 VCLBackend {
                     name: vcl_name.to_string(),
@@ -246,7 +247,7 @@ mod reqwest {
             let vcl_req = ctx.http_req.as_ref().or(ctx.http_bereq.as_ref()).unwrap();
 
             for hdr in vcl_req {
-                req.headers.push((hdr.0.into(), hdr.1.into()));
+                req.headers.push((hdr.0.into(), hdr.1.as_ref().into()));
             }
 
             Ok(())
@@ -267,7 +268,7 @@ mod reqwest {
         }
 
         /// Retrieve the value of the first header named `key`, or returns NULL if it doesn't exist, or there was a transmission error.
-        pub fn header(
+        pub unsafe fn header(
             &self,
             ctx: &mut Ctx,
             #[shared_per_vcl] vp_vcl: Option<&BgThread>,
@@ -295,26 +296,25 @@ mod reqwest {
                     .map(HeaderValue::as_ref)
                     .into_vcl(&mut ctx.ws),
                 (_, Some(s)) => {
-                    let mut ws = ctx.ws.reserve();
+                    let mut buf = ctx.ws.slice_builder()?;
                     for (i, h) in all_headers.enumerate() {
                         if i != 0 {
-                            ws.buf
+                            buf
                                 .write(s.as_ref())
                                 .map_err(|e| VclError::new(e.to_string()))?;
                         }
 
-                        ws.buf
+                        buf
                             .write(h.as_ref())
                             .map_err(|e| VclError::new(e.to_string()))?;
                     }
-                    let buf = ws.release(0);
-                    buf.into_vcl(&mut ctx.ws)
+                    buf.finish().into_vcl(&mut ctx.ws)
                 }
             }
         }
 
         /// Retrieve the response body, returns an empty string in case of error.
-        pub fn body_as_string(
+        pub unsafe fn body_as_string(
             &self,
             ctx: &mut Ctx,
             #[shared_per_vcl] vp_vcl: Option<&BgThread>,
@@ -349,7 +349,7 @@ mod reqwest {
         }
 
         /// Return a VCL backend built upon the `client` specification
-        pub fn backend(&self) -> VCL_BACKEND {
+        pub unsafe fn backend(&self) -> VCL_BACKEND {
             self.be.vcl_ptr()
         }
     }

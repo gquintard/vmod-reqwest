@@ -33,6 +33,7 @@ varnish v1 -arg "-p debug=+syncvsl" -vcl {
 } -start
 
 shell {
+	varnishadm -n ${v1_name} backend.list -j -p > /tmp/logged
 	varnishadm -n ${v1_name} backend.list -j -p | jq
 	varnishadm -n ${v1_name} backend.list -j    | jq
 	varnishadm -n ${v1_name} backend.list

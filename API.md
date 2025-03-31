@@ -17,14 +17,7 @@ import reqwest;
 import reqwest from "path/to/libreqwest.so";
 ```
 
-### Object `client`
-
-```vcl
-// Create a new instance of the object in your VCL init function
-sub vcl_init {
-    new new = client.new([STRING base_url], [BOOL https], INT follow = 10, [DURATION timeout], [DURATION connect_timeout], BOOL auto_gzip = 1, BOOL auto_deflate = 1, BOOL auto_brotli = 1, BOOL accept_invalid_certs = 0, BOOL accept_invalid_hostnames = 0, [STRING http_proxy], [STRING https_proxy], [PROBE probe]);
-}
-```
+### Constructor `reqwest.client([STRING base_url], [BOOL https], INT follow = 10, [DURATION timeout], [DURATION connect_timeout], BOOL auto_gzip = 1, BOOL auto_deflate = 1, BOOL auto_brotli = 1, BOOL accept_invalid_certs = 0, BOOL accept_invalid_hostnames = 0, [STRING http_proxy], [STRING https_proxy], [PROBE probe])`
 
 Create a `client` object that can be used both for backend requests and in-vcl requests and will pool connections across them all. All arguments are optional.
 
@@ -34,12 +27,6 @@ Create a `client` object that can be used both for backend requests and in-vcl r
 - otherwise, the URL is `http(s)://` + `bereq.http.host` + `bereq.url`, using `https` to decide on the scheme (will fail if there's no bereq.http.host)
 
 `base_url` and `https` are mutually exclusive and can't be specified together.
-
-`probe` will work the same way as for regular backends, but there are a few details to be aware of:
-- the health will only prevent a fetch for backends (i.e. when using `client.backend()`), not when creating free standing requests (`client.init()`/`client.send()`).
-- if the `client` has a `base_url`, the probe will prepend it to its `.url` field to know which URL to probe.
-- otherwise, it'll just use the `.url` field as-is (but will immediately error out if `.url` starts with a `/`).
-- this means `client`s without`base_url` can actually probe a another server that the one used as a backend.
 
 * `[STRING base_url]`:
 * `[BOOL https]`:
@@ -63,9 +50,13 @@ HTTP proxy to send your requests through
 * `[STRING https_proxy]`:
 HTTPS proxy to send your requests through
 * `[PROBE probe]`:
-a backend probe to attach to the backend
+`probe` will work the same way as for regular backends, but there are a few details to be aware of:
+- the health will only prevent a fetch for backends (i.e. when using `client.backend()`), not when creating free standing requests (`client.init()`/`client.send()`).
+- if the `client` has a `base_url`, the probe will prepend it to its `.url` field to know which URL to probe.
+- otherwise, it'll just use the `.url` field as-is (but will immediately error out if `.url` starts with a `/`).
+- this means `client`s without`base_url` can actually probe a another server that the one used as a backend.
 
-#### Method `VOID init(STRING name, STRING url, STRING method = "GET")`
+#### Method `VOID <object>.init(STRING name, STRING url, STRING method = "GET")`
 
 reate an http request, identifying it by its `name`. The request is local to the VCL task it was created in. If a request already existed with the same name, it it simply dropped and replaced, i.e. it is NOT automatically sent.
 
@@ -76,7 +67,7 @@ URL/path of the request
 * `STRING method`:
 HTTP method to use
 
-#### Method `VOID send(STRING name)`
+#### Method `VOID <object>.send(STRING name)`
 
 Actually send request `name`. This is non-blocking, and optional if you access the response. Any call to `status()`, `header()`, `body_as_string()` or `error()` will implicitly call `send()` if necessary and wait for the response to arrive.
 
@@ -87,7 +78,7 @@ Actually send request `name`. This is non-blocking, and optional if you access t
 * `STRING name`:
 request handle
 
-#### Method `VOID set_header(STRING name, STRING key, STRING value)`
+#### Method `VOID <object>.set_header(STRING name, STRING key, STRING value)`
 
 Add a new header `name: value` to the unsent request named `name`. Calling this on a non-existing, or already sent request will trigger a VCL error.
 
@@ -98,7 +89,7 @@ header name
 * `STRING value`:
 header value
 
-#### Method `VOID set_body(STRING name, STRING body)`
+#### Method `VOID <object>.set_body(STRING name, STRING body)`
 
 Set the body of the unsent request named `name`. As for `set_header()`, the request must exist and not have been sent.
 
@@ -107,21 +98,21 @@ request handle
 * `STRING body`:
 the body to send
 
-#### Method `VOID copy_headers_to_req(STRING name)`
+#### Method `VOID <object>.copy_headers_to_req(STRING name)`
 
 Copy the native request headers (i.e. `req` or `bereq`) into the request named `name`.
 
 * `STRING name`:
 request handle
 
-#### Method `INT status(STRING name)`
+#### Method `INT <object>.status(STRING name)`
 
 Retrieve the response status (send and wait if necessary), returns 0 if the reponse failed, but will cause a VCL errorif call on a non-existing request.
 
 * `STRING name`:
 request handle
 
-#### Method `STRING header(STRING name, STRING key, [STRING sep])`
+#### Method `STRING <object>.header(STRING name, STRING key, [STRING sep])`
 
 Retrieve the value of the first header named `key`, or returns NULL if it doesn't exist, or there was a transmission error.
 
@@ -132,20 +123,20 @@ header name
 * `[STRING sep]`:
 if set, concatenate all headers named `key`, using `sep` as separator
 
-#### Method `STRING body_as_string(STRING name)`
+#### Method `STRING <object>.body_as_string(STRING name)`
 
 Retrieve the response body, returns an empty string in case of error.
 
 * `STRING name`:
 request handle
 
-#### Method `STRING error(STRING name)`
+#### Method `STRING <object>.error(STRING name)`
 
 Returns the error string if request `name` failed.
 
 * `STRING name`:
 request handle
 
-#### Method `BACKEND backend()`
+#### Method `BACKEND <object>.backend()`
 
 Return a VCL backend built upon the `client` specification
