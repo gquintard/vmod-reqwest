@@ -15,7 +15,7 @@ pub mod reqwest_private {
     use varnish::vcl::{
         log, Buffer, Ctx, Event, LogTag, Probe, Request as ProbeRequest, VclError, VclResult,
     };
-    use varnish::vcl::{Backend, VclBackend, VclResponse, StrOrBytes};
+    use varnish::vcl::{Backend, StrOrBytes, VclBackend, VclResponse};
 
     pub struct ProbeState {
         spec: Probe,
@@ -41,12 +41,12 @@ pub mod reqwest_private {
     }
 
     // silly helper until varnish-rs provides something more ergonomic
-fn sob_helper(sob: StrOrBytes) -> &str {
-    match sob {
-        StrOrBytes::Bytes(_) => panic!("{:?} isn't a string", sob),
-        StrOrBytes::Utf8(s) => s,
+    fn sob_helper(sob: StrOrBytes) -> &str {
+        match sob {
+            StrOrBytes::Bytes(_) => panic!("{:?} isn't a string", sob),
+            StrOrBytes::Utf8(s) => s,
+        }
     }
-}
 
     impl<'a> VclBackend<BackendResp> for VCLBackend {
         fn get_response(&self, ctx: &mut Ctx<'_>) -> VclResult<Option<BackendResp>> {
@@ -237,12 +237,11 @@ fn sob_helper(sob: StrOrBytes) -> &str {
                     } else {
                         vsb.write(&"[]").unwrap();
                     }
-                } else if detailed {  
+                } else if detailed {
                     vsb.write(&"0/0\t").unwrap();
                     vsb.write(&state).unwrap();
                 }
                 return;
-
             }
             let ProbeState {
                 history,
@@ -350,7 +349,7 @@ fn sob_helper(sob: StrOrBytes) -> &str {
                     self.bytes = None;
                 }
                 if buf.len() == 0 {
-                    return  Ok(n);
+                    return Ok(n);
                 }
             }
         }

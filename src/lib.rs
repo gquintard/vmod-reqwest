@@ -299,13 +299,11 @@ mod reqwest {
                     let mut buf = ctx.ws.slice_builder()?;
                     for (i, h) in all_headers.enumerate() {
                         if i != 0 {
-                            buf
-                                .write(s.as_ref())
+                            buf.write(s.as_ref())
                                 .map_err(|e| VclError::new(e.to_string()))?;
                         }
 
-                        buf
-                            .write(h.as_ref())
+                        buf.write(h.as_ref())
                             .map_err(|e| VclError::new(e.to_string()))?;
                     }
                     buf.finish().into_vcl(&mut ctx.ws)
