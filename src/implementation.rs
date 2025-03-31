@@ -1,3 +1,4 @@
+#[allow(clippy::box_collection)]
 pub mod reqwest_private {
     use std::boxed::Box;
     use std::io::Write;
@@ -48,7 +49,7 @@ pub mod reqwest_private {
         }
     }
 
-    impl<'a> VclBackend<BackendResp> for VCLBackend {
+    impl<'_> VclBackend<BackendResp> for VCLBackend {
         fn get_response(&self, ctx: &mut Ctx<'_>) -> VclResult<Option<BackendResp>> {
             if !self.healthy(ctx).0 {
                 return Err("unhealthy".into());
@@ -142,7 +143,7 @@ pub mod reqwest_private {
                     );
 
                     if (*bo.req).req_body_status != BS_CACHED.as_ptr() {
-                        bo.no_retry = "req.body not cached\0".as_ptr() as *const c_char;
+                        bo.no_retry = c"req.body not cached".as_ptr() as *const c_char;
                     }
 
                     if (*bo.req).req_body_status == BS_ERROR.as_ptr() {
@@ -348,7 +349,7 @@ pub mod reqwest_private {
                 if self.cursor == pull_buf.len() {
                     self.bytes = None;
                 }
-                if buf.len() == 0 {
+                if buf.is_empty() {
                     return Ok(n);
                 }
             }
