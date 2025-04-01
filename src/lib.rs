@@ -1,3 +1,4 @@
+#![allow(clippy::box_collection)]
 mod implementation;
 
 use varnish::run_vtc_tests;

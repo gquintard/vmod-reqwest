@@ -1,4 +1,3 @@
-#[allow(clippy::box_collection)]
 pub mod reqwest_private {
     use std::boxed::Box;
     use std::io::Write;
@@ -49,7 +48,8 @@ pub mod reqwest_private {
         }
     }
 
-    impl<'_> VclBackend<BackendResp> for VCLBackend {
+    #[allow(clippy::extra_unused_lifetimes)]
+    impl<'a> VclBackend<BackendResp> for VCLBackend {
         fn get_response(&self, ctx: &mut Ctx<'_>) -> VclResult<Option<BackendResp>> {
             if !self.healthy(ctx).0 {
                 return Err("unhealthy".into());
